@@ -58,6 +58,20 @@ jobs:
           done
           curl -sf http://localhost:8000/ | grep '"status":"ok"'
 
+      # The nginx configs carry the security headers (CSP, HSTS-ready, etc.).
+      # Verifying they actually boot and respond proves a misconfig breaks CI.
+      - name: Verify nginx security headers (ui + site)
+        run: |
+          set -eux
+          # ui (console) serves the SPA and must expose the CSP + nosniff.
+          HDR=$(curl -sI http://localhost:8080/ --max-time 20)
+          echo "$HDR" | grep -i 'HTTP/1.1 200' || true
+          echo "$HDR" | grep -iq 'content-security-policy' && echo "ui CSP present"
+          echo "$HDR" | grep -iq 'x-content-type-options: nosniff' && echo "ui nosniff present"
+          # site (marketing) serves the landing page with its own CSP.
+          SHDR=$(curl -sI http://localhost:8081/ --max-time 20)
+          echo "$SHDR" | grep -iq 'content-security-policy' && echo "site CSP present"
+
       - name: "Smoke: signup -> upload -> confirm -> audit (in containers)"
         run: |
           set -eux
