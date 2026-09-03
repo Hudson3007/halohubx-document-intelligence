@@ -1,0 +1,42 @@
+{
+  "_readme": "Gold set for HaloHubX benchmark.py. Each key maps a PDF filename under benchmark/pdfs/ to the ground-truth values a human verified from the document itself (NOT the AI's output — label these by reading the source PDF). benchmark.py only scores the FIRST invoice and only fields present here; omit any field you don't want scored, and omit 'line_items' to skip line-item scoring.",
+  "bill_8_two_invoices.pdf": {
+    "vendor": {
+      "name": "BYTESWARE ELECTRONICS",
+      "gstin": "29AHFPB1762Q1ZZ"
+    },
+    "invoice_details": {
+      "invoice_number": "IN-27992",
+      "date": "2026-02-14"
+    },
+    "total_amount": {
+      "value": 2116.0
+    },
+    "line_items": [
+      {
+        "description": "xcluma INMP441 Omnidirectional High Precision MEMS Microphone Module I2S Support | B0B88CV7XF ( BE-002818 )",
+        "quantity": 3,
+        "unit_price": 260.17,
+        "total_value": 921.0
+      },
+      {
+        "description": "Shipping Charges",
+        "quantity": null,
+        "unit_price": 8.47,
+        "total_value": 30.0
+      },
+      {
+        "description": "xcluma MAX30102 Upgraded MAX30100 Heart Rate Pulse Sensor Ultra-Low Power Compatible with UNO and STM | B07TZCNG2G ( BE-001941 )",
+        "quantity": 5,
+        "unit_price": 188.98,
+        "total_value": 1115.0
+      },
+      {
+        "description": "Shipping Charges",
+        "quantity": 5,
+        "unit_price": 8.47,
+        "total_value": 50.0
+      }
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+# Never send secrets or build junk into the Docker build context.
+# These matter because `docker compose build` uses the whole project dir as
+# context for the api image — office-ai/ alone is ~1.5 GB, so skipping these
+# keeps builds fast and images clean.
+
+# Secrets + local env
+.env
+*.env
+!**/.env.example
+!app/**/.env
+
+# Python
+venv/
+**/venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+**/node_modules/
+dist/
+
+# Office AI runtime (large)
+office-ai/venv/
+office-ai/data/
+office-ai/.streamlit/secrets.toml
+
+# Retained source PDFs
+data/uploads/
+
+# Benchmark artifacts
+benchmark/reports/
+
+# Git / editor / OS
+.git/
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp

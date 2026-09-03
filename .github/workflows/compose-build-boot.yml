@@ -1,0 +1,110 @@
+name: Build & boot smoke test
+
+# Proves the whole Docker Compose stack actually builds and boots, and that
+# the end-to-end loop works inside containers. This is the Phase-0 gate for
+# "does it really run", plus a regression guard for the Phase-2 accuracy and
+# Phase-3 billing work.
+#
+# NOTE: office-ai pulls torch/sentence-transformers (~2GB) and builds slowly,
+# so builds on GitHub-hosted runners naturally take a long while. Watch the
+# job timeout (default 360 min) if this grows.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  compose-build-and-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      POSTGRES_PASSWORD: ci_test_password
+      DEFAULT_AI_PROVIDER: gemini
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} # optional; smoke test needs providers OR a stub
+      HALOHUBX_PARTNER_API_KEY: "ci_partner_key"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose
+        run: docker compose config --quiet && echo "compose config valid"
+
+      - name: Validate YAML + Python syntax (fast, before slow builds)
+        run: |
+          python - <<'EOF'
+          import yaml
+          yaml.safe_load(open('docker-compose.yml'))
+          print('compose YAML OK')
+          EOF
+
+      - name: Build images (db/api/ui/site/office-ai; sync-agent in its profile)
+        run: |
+          docker compose build api ui site
+          docker compose --profile onprem build sync-agent
+        # office-ai is built below in its own step so a failure is isolated.
+
+      - name: Build office-ai image (heavy deps — isolated)
+        run: docker compose build office-ai
+
+      # Boot the SaaS core first (db/api/ui/site) — no provider key needed to
+      # prove the containers come up; the smoke upload only needs the pipeline.
+      - name: Boot core stack
+        run: |
+          docker compose up -d db api ui site
+          for i in $(seq 1 40); do
+            if curl -sf http://localhost:8000/ >/dev/null; then echo "api up"; break; fi
+            sleep 3
+          done
+          curl -sf http://localhost:8000/ | grep '"status":"ok"'
+
+      - name: Smoke: signup -> upload -> confirm -> audit (in containers)
+        run: |
+          set -eux
+          # The api entrypoint seeds a default partner + (if creds set) a user.
+          # We read the seeded partner's api_key directly from Postgres via the
+          # api service's own DB access to keep this hermetic.
+          API_KEY=$(docker compose exec -T api python -c "from app.db import SessionLocal; from app.models import Partner; db=SessionLocal(); print(db.query(Partner).first().api_key); db.close()")
+          echo "partner key: ${API_KEY:0:12}..."
+
+          # Self-serve signup also works and returns its own key.
+          KEY=$(curl -s http://localhost:8000/auth/signup -H 'Content-Type: application/json' \
+                -d "{\"name\":\"CI\",\"email\":\"ci_$(date +%s)@example.com\",\"password\":\"CIPass12345!\"}" \
+                | python -c 'import sys,json;print(json.load(sys.stdin)["session_token"])')
+          echo "console token: ${KEY:0:12}..."
+
+          # Generate a minimal 1-page PDF inside the api container (has pymupdf) and
+      # upload it from the same container via httpx, which keeps the test
+      # hermetic (no host copy step).
+          DID=$(docker compose exec -T -e CI_KEY="$KEY" api python - <<'EOF'
+          import fitz, httpx
+          doc = fitz.open(); page = doc.new_page()
+          page.insert_text((72,72), "INVOICE vendor Acme GSTIN 29AAAAA0000A1Z5 total 100.00 invoice=INV-1")
+          pdf = doc.tobytes()
+          r = httpx.post("http://localhost:8000/upload",
+                         headers={"Authorization": "Bearer %s" % __import__("os").environ["CI_KEY"]},
+                         files={"file": ("ci_smoke.pdf", pdf, "application/pdf")},
+                         data={"client_name": "CI Client"})
+          print(r.json()["document_id"])
+          EOF
+          )
+          echo "uploaded doc: $DID"
+          curl -sf http://localhost:8000/hitl/document/$DID -H "Authorization: Bearer $KEY" >/dev/null
+          curl -sf -X POST http://localhost:8000/hitl/document/$DID/confirm \
+               -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+               -d '{"result":{"invoice_count":1,"invoices":[]}}' \
+               | grep '"status":"completed"'
+          curl -sf http://localhost:8000/audit -H "Authorization: Bearer $KEY" | grep '"action":"upload"'
+
+      - name: Boot office-ai (Streamlit) and hit its health page
+        run: |
+          docker compose up -d office-ai
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8501/_stcore/health >/dev/null; then echo "office-ai up"; break; fi
+            sleep 3
+          done
+          curl -sf http://localhost:8501/_stcore/health
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

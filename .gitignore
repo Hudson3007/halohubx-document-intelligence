@@ -1,0 +1,46 @@
+# ---- Secrets & local config ----
+.env
+*.env
+!**/.env.example
+app/**/.env
+
+# ---- Python ----
+venv/
+**/venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# ---- Node / frontends ----
+node_modules/
+**/node_modules/
+frontend/dist/
+site/dist/
+*.local
+
+# ---- Office AI runtime (large) ----
+office-ai/venv/
+office-ai/data/
+office-ai/.streamlit/secrets.toml
+office-ai/*.log
+
+# ---- Retained source PDFs ----
+data/uploads/
+sync-agent/inbox/
+sync-agent/out/
+sync-agent/archive/
+
+# ---- Benchmark artifacts (reports are regenerated) ----
+benchmark/reports/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.log
+.DS_Store
+Thumbs.db
+
+# ---- CI / local tooling ----
+.pycharm*

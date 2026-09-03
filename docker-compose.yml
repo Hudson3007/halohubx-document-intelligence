@@ -1,0 +1,81 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: halohubx
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-halohubx}
+      POSTGRES_DB: halohubx
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U halohubx"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://halohubx:${POSTGRES_PASSWORD:-halohubx}@db:5432/halohubx
+      DEFAULT_AI_PROVIDER: ${DEFAULT_AI_PROVIDER:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      WEBHOOK_MAX_RETRIES: ${WEBHOOK_MAX_RETRIES:-3}
+      LOW_CONFIDENCE_THRESHOLD: ${LOW_CONFIDENCE_THRESHOLD:-0.85}
+      UPLOAD_DIR: /srv/data/uploads
+      CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+    volumes:
+      - api_uploads:/srv/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  ui:
+    build: ./frontend
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+  # Marketing / landing website.
+  site:
+    build: ./site
+    ports:
+      - "8081:80"
+
+  # Office AI — Streamlit workspace (Company Brain Q&A + Document Reader)
+  # with a Review Queue that talks to the api service.
+  office-ai:
+    build: ./office-ai
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      HALOHUBX_BACKEND_URL: http://api:8000
+      HALOHUBX_PARTNER_API_KEY: ${HALOHUBX_PARTNER_API_KEY:-}
+    volumes:
+      - office_ai_data:/srv/data
+    depends_on:
+      - api
+    ports:
+      - "8501:8501"
+
+  # Optional on-prem sync agent for Tally/legacy ERPs (PDF only).
+  sync-agent:
+    build: ./sync-agent
+    profiles: ["onprem"]
+    environment:
+      HALOHUBX_API: http://api:8000
+      HALOHUBX_API_KEY: ${HALOHUBX_API_KEY:-}
+      HALOHUBX_CLIENT_NAME: ${HALOHUBX_CLIENT_NAME:-}
+    volumes:
+      - ./sync-agent/inbox:/inbox
+      - ./sync-agent/out:/out
+      - ./sync-agent/archive:/archive
+    command: ["python", "agent.py", "--input", "/inbox", "--output", "/out", "--archive", "/archive", "--api", "http://api:8000", "--api-key", "${HALOHUBX_API_KEY:-}", "--client-name", "${HALOHUBX_CLIENT_NAME:-}"]
+
+volumes:
+  pgdata:
+  office_ai_data:
+  api_uploads:

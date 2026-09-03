@@ -1,0 +1,7 @@
+inbox/
+out/
+archive/
+__pycache__/
+*.pyc
+*.log
+.env

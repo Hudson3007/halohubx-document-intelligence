@@ -1,0 +1,44 @@
+{
+  "overall": 95.2,
+  "totalScored": 21,
+  "documents": 1,
+  "perField": [
+    {
+      "field": "Invoice date",
+      "rate": 100.0
+    },
+    {
+      "field": "Invoice number",
+      "rate": 100.0
+    },
+    {
+      "field": "Line item description",
+      "rate": 100.0
+    },
+    {
+      "field": "Line item qty",
+      "rate": 75.0
+    },
+    {
+      "field": "Line item total",
+      "rate": 100.0
+    },
+    {
+      "field": "Line item unit price",
+      "rate": 100.0
+    },
+    {
+      "field": "Total amount",
+      "rate": 100.0
+    },
+    {
+      "field": "GSTIN",
+      "rate": 100.0
+    },
+    {
+      "field": "Vendor name",
+      "rate": 100.0
+    }
+  ],
+  "note": "Field-level accuracy vs. human-labelled ground truth on 1 document(s) of Indian GST invoices, POs and receipts. Generated with benchmark.py \u2014 this page updates automatically on every run."
+}
