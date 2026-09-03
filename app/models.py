@@ -112,6 +112,16 @@ class User(Base):
     session_token = Column(String, unique=True, nullable=True, index=True)  # console bearer token
     invite_token = Column(String, unique=True, nullable=True, index=True)  # one-time invite link
     invite_accepted = Column(Boolean, default=False)
+
+    # --- Session + login hardening ---
+    # A console session token is a bearer credential; an expired or revoked
+    # token is rejected by app.auth.get_actor before any data is served.
+    session_expires_at = Column(DateTime, nullable=True)   # None => never expires (legacy API-key style)
+    session_revoked = Column(Boolean, default=False)       # explicit revocation
+    # Brute-force protection on the password login endpoint.
+    login_failed_attempts = Column(Integer, default=0)     # consecutive failures
+    login_locked_until = Column(DateTime, nullable=True)   # lockout window after too many failures
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
     partner = relationship("Partner")

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   acceptInvite,
+  AuthError,
   checkHealth,
   confirmDocument,
   createMember,
@@ -13,6 +14,7 @@ import {
   inviteInfo,
   listMembers,
   login,
+  logout,
   signup,
   uploadDocument,
 } from "./api.js";
@@ -900,16 +902,20 @@ export default function App() {
     checkHealth().then(() => setServerOk(true)).catch(() => setServerOk(false));
   }, []);
 
-  // Restore a persisted session by validating the stored token on load.
+  // Restore a persisted session by validating the stored token on load. Only
+  // a 401 (expired/revoked session) forces a sign-out; a transient network
+  // failure keeps the session so the user isn't logged out by a hiccup.
   const triedRestore = useRef(false);
   useEffect(() => {
     if (!token || triedRestore.current) return;
     triedRestore.current = true;
     getDashboard(token)
       .then(() => setConnected(true))
-      .catch(() => {
-        setSession((s) => ({ ...s, token: "", user: null }));
-        try { localStorage.removeItem(SESSION_KEY); } catch {}
+      .catch((err) => {
+        if (err instanceof AuthError) {
+          setSession((s) => ({ ...s, token: "", user: null }));
+          try { localStorage.removeItem(SESSION_KEY); } catch {}
+        }
       });
   }, [token]);
 
@@ -941,6 +947,14 @@ export default function App() {
     setSession({ token: "", user: null, partnerName: "" });
     setUsage(null);
     try { localStorage.removeItem(SESSION_KEY); } catch {}
+  };
+
+  // Sign out explicitly: revoke the session server-side, then clear locally.
+  const signOut = async () => {
+    if (token) {
+      try { await logout(token); } catch { /* session may already be stale */ }
+    }
+    disconnect();
   };
 
   // If a user is already signed in and hits an invite link, still let them
@@ -1016,6 +1030,9 @@ export default function App() {
               {user?.name || "Console user"}
               <em className="role-tag">{user?.role === "analyst" ? "analyst" : "owner"}</em>
             </span>
+            <button className="logout-btn" onClick={signOut} title="Sign out">
+              Sign out
+            </button>
           </div>
         </header>
         <main>{body}</main>

@@ -28,6 +28,18 @@ WEBHOOK_MAX_RETRIES = int(os.environ.get("WEBHOOK_MAX_RETRIES", "3"))
 # on the same threshold.
 LOW_CONFIDENCE_THRESHOLD = float(os.environ.get("LOW_CONFIDENCE_THRESHOLD", "0.85"))
 
+# --- Auth hardening ---
+# Console session tokens expire after this many hours (re-issue on login).
+SESSION_TOKEN_TTL_HOURS = int(os.environ.get("SESSION_TOKEN_TTL_HOURS", "12"))
+# Password login is locked out after LOGIN_MAX_ATTEMPTS consecutive failures.
+LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", "5"))
+# Lockout window (minutes) once the failure cap is reached.
+LOGIN_LOCKOUT_MINUTES = int(os.environ.get("LOGIN_LOCKOUT_MINUTES", "15"))
+# Coarse in-process rate cap for auth endpoints (requests/min per client IP). This
+# is a belt-and-braces measure; a reverse proxy (nginx/CloudFront) is the real
+# enforcement surface in production.
+AUTH_RATE_LIMIT_PER_MIN = int(os.environ.get("AUTH_RATE_LIMIT_PER_MIN", "20"))
+
 # Where the original PDF is stored so the HITL / Review Queue UI can show a
 # side-by-side preview of the source while a human corrects the extraction.
 # NOTE: this means the API now retains source files (a deliberate choice to

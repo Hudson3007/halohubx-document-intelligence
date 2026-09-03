@@ -1,4 +1,14 @@
+// @ts-nocheck
 const API_BASE = ""; // team backend serves /upload, /status, /hitl at root (proxied)
+
+// Thrown on an unauthenticated (401) response so the console can clear an
+// expired/revoked session and bounce to the sign-in screen.
+export class AuthError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
 
 async function jfetch(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, options);
@@ -18,7 +28,19 @@ async function jfetch(path, options = {}) {
 async function authedFetch(path, apiKey, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  return jfetch(path, { ...options, headers });
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  if (res.status === 401) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = JSON.stringify(body.detail || body);
+    } catch {
+      /* ignore */
+    }
+    throw new AuthError(`${res.status}: ${detail}`);
+  }
+  if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+  return res.json();
 }
 
 export async function uploadDocument(file, { apiKey, clientName, webhookUrl }) {
@@ -72,6 +94,10 @@ export async function signup(body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export async function logout(apiKey) {
+  return authedFetch(`/auth/logout`, apiKey, { method: "POST" });
 }
 
 export async function listAllDocuments(apiKey) {

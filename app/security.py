@@ -9,6 +9,10 @@ import base64
 import hashlib
 import hmac
 import os
+import threading
+import time
+
+from app.config import AUTH_RATE_LIMIT_PER_MIN
 
 ITERATIONS = 260_000
 _ALGO = "pbkdf2_sha256"
@@ -36,3 +40,37 @@ def verify_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(dk, expected)
     except Exception:
         return False
+
+
+class RateLimiter:
+    """A minimal fixed-window, per-client, in-process rate limiter.
+
+    Good enough to blunt credential-stuffing / signup-spray against the
+    single uvicorn worker this MVP runs. It is NOT a substitute for a shared
+    limiter (Redis) or an edge gateway in multi-worker production — that is a
+    Phase-3+ concern. Buckets are pruned on access to bound memory.
+    """
+
+    def __init__(self, per_window: int = AUTH_RATE_LIMIT_PER_MIN, window_seconds: int = 60):
+        self.per_window = per_window
+        self.window_seconds = window_seconds
+        self._buckets: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def allow(self, key: str) -> bool:
+        now = time.monotonic()
+        cutoff = now - self.window_seconds
+        with self._lock:
+            hits = self._buckets.get(key, [])
+            # Drop out-of-window timestamps.
+            hits = [t for t in hits if t > cutoff]
+            if len(hits) >= self.per_window:
+                self._buckets[key] = hits
+                return False
+            hits.append(now)
+            self._buckets[key] = hits
+            return True
+
+
+# Shared instance for the auth endpoints (in-process, single worker).
+auth_limiter = RateLimiter()

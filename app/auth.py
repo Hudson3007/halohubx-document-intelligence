@@ -13,14 +13,22 @@ a partner dashboard with login (Phase 4/5), that's a separate, additional
 auth layer for humans — this key-based auth for the API itself can stay.
 """
 
+from datetime import datetime
+
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
+from app.config import SESSION_TOKEN_TTL_HOURS
 from app.db import get_db
 from app.models import Partner, User
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _now() -> datetime:
+    """UTC now, naive, consistent with the models' `datetime.utcnow()`."""
+    return datetime.utcnow()
 
 
 def get_current_partner(
@@ -74,9 +82,46 @@ def get_actor(
 
     user = db.query(User).filter(User.session_token == token).first()
     if user is not None:
+        _assert_session_valid(user)
         return Actor(partner_id=user.partner_id, role=user.role, source="session", email=user.email)
 
     raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _assert_session_valid(user: User) -> None:
+    """Reject console session tokens that are revoked or past their expiry."""
+    now = _now()
+    if user.session_revoked:
+        raise HTTPException(status_code=401, detail="Session has been revoked. Please log in again.")
+    if user.session_expires_at is not None and user.session_expires_at < now:
+        raise HTTPException(status_code=401, detail="Session has expired. Please log in again.")
+
+
+def issue_session(user: User, *, rotation_window_hours: int | None = None) -> str:
+    """Set a fresh expiry on a user's session and return its token.
+
+    `rotation_window_hours`: re-issue a NEW token only when the current one is
+    older than this window, so frequently-active sessions stay alive without
+    a fresh login, while idle sessions still lapse after TTL.
+    """
+    import secrets
+
+    expires = _now()
+    from app.config import SESSION_TOKEN_TTL_HOURS as TTL_HOURS
+    from datetime import timedelta
+
+    expires += timedelta(hours=TTL_HOURS)
+    # Extend the lifetime of an existing (still-valid) token if it's within
+    # the rotation window. Otherwise mint a fresh token.
+    if user.session_token and user.session_expires_at and rotation_window_hours:
+        if user.session_expires_at > _now():
+            user.session_expires_at = expires
+            return user.session_token
+    token = "hhx_session_" + secrets.token_urlsafe(32)
+    user.session_token = token
+    user.session_expires_at = expires
+    user.session_revoked = False
+    return token
 
 
 def require_role(*roles: str):

@@ -15,23 +15,44 @@ Roles: 'owner' (manage), 'analyst' (review/approve). See app.models.User.
 
 import re
 import secrets
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.auth import get_actor, require_role, Actor
+from app.auth import get_actor, require_role, Actor, issue_session
+from app.config import LOGIN_MAX_ATTEMPTS, LOGIN_LOCKOUT_MINUTES
 from app.db import get_db
 from app.models import Partner, User
-from app.security import hash_password, verify_password
+from app.security import hash_password, verify_password, auth_limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-def _new_session_token() -> str:
-    return "hhx_session_" + secrets.token_urlsafe(32)
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
+def _client_key(request: Request) -> str:
+    """Best-effort client identifier for rate limiting: X-Forwarded-For first
+    hop (set by a proxy) or the direct peer address, else a loopback fallback."""
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "unknown"
+
+
+def _rate_limited(request: Request) -> None:
+    if not auth_limiter.allow(_client_key(request)):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again shortly.",
+        )
 
 
 class SignupRequest(BaseModel):
@@ -57,8 +78,10 @@ def _public_user(u: User) -> dict:
 @router.post("/signup")
 def signup(
     req: SignupRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    _rate_limited(request)
     _validate_email(req.email)
     existing = db.query(User).filter(User.email == req.email.lower()).first()
     if existing is not None:
@@ -77,16 +100,18 @@ def signup(
         name=req.name or req.email.split("@")[0],
         password_hash=hash_password(req.password),
         role="owner",
-        session_token=_new_session_token(),
+        session_token=None,  # set by issue_session below
     )
     db.add(user)
+    db.flush()
+    session_token = issue_session(user)
     db.commit()
     db.refresh(partner)
     db.refresh(user)
 
     return {
         "api_key": api_key,
-        "session_token": user.session_token,
+        "session_token": session_token,
         "partner_id": partner.id,
         "partner_name": partner.name,
         "user": _public_user(user),
@@ -96,18 +121,53 @@ def signup(
 @router.post("/login")
 def login(
     req: LoginRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
+    _rate_limited(request)
     user = db.query(User).filter(User.email == req.email.lower()).first()
-    if user is None or not verify_password(req.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    # Uniform error for unknown user vs wrong password (don't leak account
+    # existence), but only run the PBKDF2 check when there's a real user so we
+    # don't waste hashes on spray attempts.
+    now = _now()
+
+    def _reject() -> HTTPException:
+        return HTTPException(status_code=401, detail="Invalid email or password.")
+
+    if user is None:
+        raise _reject()
+
+    # Enforce the lockout window if active.
+    if user.login_locked_until is not None and user.login_locked_until > now:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again after the lockout window.",
+        )
+
+    if not verify_password(req.password, user.password_hash):
+        user.login_failed_attempts = (user.login_failed_attempts or 0) + 1
+        locked = user.login_failed_attempts >= LOGIN_MAX_ATTEMPTS
+        if locked:
+            user.login_locked_until = now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+            user.login_failed_attempts = 0  # reset counter; window governs
+            db.commit()
+            raise HTTPException(
+                status_code=429,
+                detail=f"Account temporarily locked after {LOGIN_MAX_ATTEMPTS} failed attempts. Try again later.",
+            )
+        db.commit()
+        raise _reject()
+
+    # Success: clear any lockout state and rotate the session token.
+    user.login_failed_attempts = 0
+    user.login_locked_until = None
 
     partner = db.query(Partner).filter(Partner.id == user.partner_id).first()
     if partner is None:
         raise HTTPException(status_code=404, detail="Partner account not found.")
 
-    # Rotate the console session token each login for basic revocation hygiene.
-    user.session_token = _new_session_token()
+    session_token = issue_session(user)
     db.commit()
 
     # Audit: record the login.
@@ -122,11 +182,42 @@ def login(
 
     return {
         "api_key": partner.api_key,
-        "session_token": user.session_token,
+        "session_token": session_token,
         "partner_id": partner.id,
         "partner_name": partner.name,
         "user": _public_user(user),
     }
+
+
+@router.post("/logout")
+def logout(
+    actor: Actor = Depends(get_actor),
+    db: Session = Depends(get_db),
+):
+    """Revoke the caller's current console session. API-key callers are
+    no-ops (they have no session to revoke). The token is invalidated
+    immediately server-side."""
+    if actor.source != "session":
+        return {"revoked": False, "detail": "No console session to revoke."}
+    user = db.query(User).filter(
+        User.partner_id == actor.partner_id,
+        User.email == actor.email,
+    ).first()
+    if user is None:
+        return {"revoked": False, "detail": "Session not found."}
+    user.session_revoked = True
+    user.session_token = None          # stop accepting the token entirely
+    user.session_expires_at = None
+    db.commit()
+
+    from app.audit import record
+    record(
+        db, partner_id=actor.partner_id, action="logout",
+        actor_email=actor.email, actor_role=actor.role,
+        summary="Signed out of partner console",
+    )
+    db.commit()
+    return {"revoked": True}
 
 
 def _new_invite_token() -> str:
@@ -221,10 +312,12 @@ def invite_info(
 def accept_invite(
     token: str,
     req: InviteAcceptRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """Public: the invitee sets their own name + password, completing onboarding.
     Issues a session token so they can be signed in immediately. One-time use."""
+    _rate_limited(request)
     user = db.query(User).filter(User.invite_token == token).first()
     if user is None:
         raise HTTPException(status_code=404, detail="Invite not found or already used.")
@@ -238,7 +331,9 @@ def accept_invite(
         user.name = req.name
     user.invite_accepted = True
     user.invite_token = None                  # one-time use
-    user.session_token = _new_session_token() # signed straight in
+    user.login_failed_attempts = 0
+    user.login_locked_until = None
+    session_token = issue_session(user)       # signed straight in
     db.commit()
     db.refresh(user)
 
@@ -252,7 +347,7 @@ def accept_invite(
 
     return {
         "api_key": partner.api_key,
-        "session_token": user.session_token,
+        "session_token": session_token,
         "partner_id": partner.id,
         "partner_name": partner.name,
         "user": _public_user(user),
