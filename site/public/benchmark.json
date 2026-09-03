@@ -1,7 +1,7 @@
 {
-  "overall": 95.2,
-  "totalScored": 21,
-  "documents": 1,
+  "overall": 98.2,
+  "totalScored": 55,
+  "documents": 7,
   "perField": [
     {
       "field": "Invoice date",
@@ -17,7 +17,7 @@
     },
     {
       "field": "Line item qty",
-      "rate": 75.0
+      "rate": 90.0
     },
     {
       "field": "Line item total",
@@ -40,5 +40,6 @@
       "rate": 100.0
     }
   ],
-  "note": "Field-level accuracy vs. human-labelled ground truth on 1 document(s) of Indian GST invoices, POs and receipts. Generated with benchmark.py \u2014 this page updates automatically on every run."
+  "synthetic": true,
+  "note": "Field-level accuracy vs. human-labelled ground truth on 7 document(s) of Indian GST invoices, POs and receipts. Measured on a generated synthetic fixture set (fictional records, labelled from source) to validate the pipeline & scoring. This is a pipeline check, NOT a claim about real customer documents \u2014 we publish a real-world headline only after benchmarking a representative, independently labelled sample of actual documents."
 }

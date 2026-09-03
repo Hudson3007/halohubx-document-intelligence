@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import html as html_mod
 from collections import defaultdict
 from pathlib import Path
@@ -296,6 +297,12 @@ def build_json(rows, agg, ok, tot):
     }
 
 
+# Default benchmark set is our generated synthetic fixtures (fictional records).
+# Flip to False with `--real-set` when scoring a real, customer-supplied set so
+# the marketing note correctly describes it as measured on actual documents.
+SYNTHETIC = True
+
+
 FIELD_LABELS = {
     "vendor.name": "Vendor name",
     "vendor.gstin": "GSTIN",
@@ -313,22 +320,36 @@ FIELD_LABELS = {
 def _site_payload(agg, ok, tot, num_docs):
     """Format the aggregate metrics into the shape the marketing site expects
     (site/public/benchmark.json): {overall, totalScored, documents,
-    perField: [{field, rate}], note}."""
+    perField: [{field, rate}], note, synthetic}. `synthetic` is true when the
+    set is our generated fixtures (not real customer documents); the site uses
+    it to show an honest source caveat instead of implying a real-world claim.
+    """
     per = []
     for cat, m in sorted(agg.items()):
         label = FIELD_LABELS.get(cat, cat.replace(".", " ").replace("_", " ").title())
         per.append({"field": label, "rate": round(100.0 * m["correct"] / m["total"], 1)
                     if m["total"] else 0.0})
+    note = (
+        f"Field-level accuracy vs. human-labelled ground truth on {num_docs} "
+        "document(s) of Indian GST invoices, POs and receipts."
+    )
+    if SYNTHETIC:
+        note += (
+            " Measured on a generated synthetic fixture set (fictional records, "
+            "labelled from source) to validate the pipeline & scoring. This is a "
+            "pipeline check, NOT a claim about real customer documents — we publish "
+            "a real-world headline only after benchmarking a representative, "
+            "independently labelled sample of actual documents."
+        )
+    else:
+        note += " Generated with benchmark.py — this page updates automatically on every run."
     return {
         "overall": round(100.0 * ok / tot, 1) if tot else 0.0,
         "totalScored": tot,
         "documents": num_docs,
         "perField": per,
-        "note": (
-            f"Field-level accuracy vs. human-labelled ground truth on {num_docs} "
-            "document(s) of Indian GST invoices, POs and receipts. Generated with "
-            "benchmark.py — this page updates automatically on every run."
-        ),
+        "synthetic": SYNTHETIC,
+        "note": note,
     }
 
 
@@ -341,7 +362,20 @@ def main():
                     help="Optionally write a JSON summary here. If omitted, also "
                          "writes a copy into the marketing site (site/public/benchmark.json) "
                          "so the landing page shows the fresh numbers.")
+    ap.add_argument("--real-set", action="store_true",
+                    help="Mark this run as scoring a REAL customer-supplied set "
+                         "(not synthetic fixtures) so the site note is accurate.")
+    ap.add_argument("--gate", action="store_true",
+                    help="CI gate mode: exit non-zero on regression (provider "
+                         "outage, empty extraction, or accuracy below floor).")
+    ap.add_argument("--gate-min-docs", type=int, default=3,
+                    help="Minimum documents that must score (default 3).")
+    ap.add_argument("--gate-min-acc", type=float, default=85.0,
+                    help="Minimum overall accuracy floor, percent (default 85).")
     args = ap.parse_args()
+
+    global SYNTHETIC
+    SYNTHETIC = not args.real_set
 
     pdf_dir = Path(args.pdfs)
     pdfs = sorted(p for p in pdf_dir.iterdir() if p.suffix.lower() == ".pdf")
@@ -368,6 +402,25 @@ def main():
         m = agg[cat]
         print(f"  {cat:20s} {m['correct']:>3}/{m['total']:<3}  "
               f"({100.0 * m['correct'] / m['total']:.1f}%)")
+
+    # CI gate: fail the run on a catastrophic regression. LLM extraction is
+    # non-deterministic, so we use a LENIENT floor + a minimum-docs assertion
+    # (catches broken prompts/empty extraction/provider outages) rather than a
+    # brittle exact number.
+    if args.gate:
+        min_acc = args.gate_min_acc
+        min_docs = args.gate_min_docs
+        errs = []
+        if len(rows) < min_docs:
+            errs.append(f"gate: only {len(rows)} document(s) scored (need >= {min_docs})")
+        if tot == 0:
+            errs.append("gate: zero fields scored (extraction returned nothing)")
+        elif 100.0 * ok / tot < min_acc:
+            errs.append(f"gate: overall accuracy {100.0 * ok / tot:.1f}% below floor {min_acc}%")
+        if errs:
+            print("\n".join(f"  !! {e}" for e in errs))
+            sys.exit(1)
+        print(f"\nGATE PASSED: {len(rows)} docs, {ok}/{tot} ({100.0*ok/tot:.1f}%) >= {min_acc}%")
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps(build_json(rows, agg, ok, tot),

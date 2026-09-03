@@ -72,6 +72,26 @@ jobs:
           SHDR=$(curl -sI http://localhost:8081/ --max-time 20)
           echo "$SHDR" | grep -iq 'content-security-policy' && echo "site CSP present"
 
+      # Need an AI provider key to run real extraction. CI currently has none,
+      # so this gate runs the benchmark ONLY when a key is configured, and
+      # otherwise reports a clear skip. It enforces the field-accuracy floor +
+      # minimum-docs (catching broken prompts/empty extraction/provider outage)
+      # over the human-labelled synthetic golden set.
+      - name: "Accuracy gate (benchmark.py; needs an AI provider key, else skips)"
+        run: |
+          set -eux
+          if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::warning::accuracy gate skipped: no AI provider key (GEMINI_API_KEY or ANTHROPIC_API_KEY) configured."
+            echo "Enable it with:  gh secret set GEMINI_API_KEY"
+            exit 0
+          fi
+          # Reuse the built api image (has app code + all deps); mount the repo
+          # read-write so benchmark.py can also refresh site/public/benchmark.json.
+          docker compose run --rm --no-deps -v "$PWD:/srv" api \
+            python benchmark.py --pdfs benchmark/pdfs --gold benchmark/gold.json \
+              --out benchmark/reports/report.html \
+              --gate --gate-min-docs 5 --gate-min-acc 80
+
       - name: "Smoke: signup -> upload -> confirm -> audit (in containers)"
         run: |
           set -eux

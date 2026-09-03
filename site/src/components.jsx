@@ -206,14 +206,26 @@ export function Features({ id = "features" }) {
 
 const MIN_HONEST_SAMPLE = 5;
 
-function BarChart({ data, overall, docs, small }) {
+function BarChart({ data, overall, docs, small, synthetic }) {
   return (
     <div className="bench-chart">
       <div className="bench-overall">
         <span className="bench-overall-num">{overall}%</span>
         <span className="bench-overall-label">measured field accuracy</span>
       </div>
-      {small ? (
+      <p className="bench-note">
+        Measured on {docs} labelled document{docs === 1 ? "" : "s"} of Indian GST
+        invoices, POs and receipts.
+      </p>
+      {synthetic ? (
+        <p className="bench-small">
+          <strong>Source:</strong> this set uses our generated synthetic fixtures
+          (fictional records, labelled from source) to validate the pipeline and
+          scoring. It is a <strong>pipeline check, not a claim about real customer
+          documents</strong> — we publish a real-world headline only after benchmarking
+          a representative, independently labelled sample of actual documents.
+        </p>
+      ) : small ? (
         <p className="bench-small">
           Measured on a small set ({docs} labelled document{docs === 1 ? "" : "s"}).
           This validates the tooling but is <strong>not a product accuracy claim</strong> —
@@ -276,7 +288,8 @@ export function Benchmark({ data: fallback, id = "benchmark" }) {
         />
         <div className="bench-card">
           {hasData ? (
-            <BarChart data={data.perField} overall={data.overall} docs={data.documents} small={small}/>
+            <BarChart data={data.perField} overall={data.overall} docs={data.documents}
+                      small={!data.synthetic && small} synthetic={!!data.synthetic}/>
           ) : (
             <BenchmarkPending note={data.note}/>
           )}
