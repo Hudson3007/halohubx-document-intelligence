@@ -16,6 +16,12 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Example Supabase Postgres URL shape:
 # postgresql://postgres:[PASSWORD]@db.[PROJECT-REF].supabase.co:5432/postgres
 
+# --- Database security guardrails (see app/db.py) ---
+# Force TLS for remote (non-loopback) Postgres connections unless this is set.
+DB_SSL_DISABLE = os.environ.get("DB_SSL_DISABLE", "false").lower() in ("true", "1", "yes")
+# Refuse to connect as a database superuser (postgres/admin/root) unless set.
+ALLOW_SUPERUSER_DB = os.environ.get("ALLOW_SUPERUSER_DB", "false").lower() in ("true", "1", "yes")
+
 DEFAULT_AI_PROVIDER = os.environ.get("DEFAULT_AI_PROVIDER", "gemini")  # "claude" or "gemini"
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")

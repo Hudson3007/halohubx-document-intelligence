@@ -24,6 +24,10 @@ services:
       LOW_CONFIDENCE_THRESHOLD: ${LOW_CONFIDENCE_THRESHOLD:-0.85}
       UPLOAD_DIR: /srv/data/uploads
       CORS_ORIGINS: http://localhost:8080,http://localhost:5173
+      # Internal compose Postgres does not terminate TLS and is on a private
+      # Docker network; force TLS off here (see app/db.py guardrails). The
+      # api user is a non-superuser role so no other opt-out is needed.
+      DB_SSL_DISABLE: "true"
     volumes:
       - api_uploads:/srv/data/uploads
     depends_on:

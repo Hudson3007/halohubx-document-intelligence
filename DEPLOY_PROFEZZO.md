@@ -164,6 +164,18 @@ quota, you can top them up, and usage is auditable per document via
   gitignored; never commit secrets. Don't share a key with a client you
   can't revoke — one partner = one key. Human access is audited in the
   Activity log, so you can always see who approved what.
+- **Database least-privilege (`app/db.py` guardrails):** the API refuses to
+  connect as a DB superuser (`postgres`/`admin`/`root`) unless
+  `ALLOW_SUPERUSER_DB=1` is explicitly set. In production create a
+  dedicated app role that owns only the schema/tables this app uses and run
+  `python -m app.init_db` migrations once as an admin, then point
+  `DATABASE_URL` at the app role. Remote (internet) connections are forced
+  over TLS (`sslmode=require`) unless `DB_SSL_DISABLE=1`.
+- **Upload + webhook safety:** uploads are capped at `MAX_UPLOAD_BYTES`
+  (25 MB) and strictly validated (PDF magic bytes + a real parse — a file
+  renamed to `.pdf` is rejected). Outbound webhook URLs are SSRF-guarded:
+  only public `https://` targets are allowed; loopback/RFC1918/cloud-metadata
+  hosts are blocked at the single delivery point.
 
 ---
 
