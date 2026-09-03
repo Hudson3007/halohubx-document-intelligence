@@ -79,7 +79,30 @@ services:
       - ./sync-agent/archive:/archive
     command: ["python", "agent.py", "--input", "/inbox", "--output", "/out", "--archive", "/archive", "--api", "http://api:8000", "--api-key", "${HALOHUBX_API_KEY:-}", "--client-name", "${HALOHUBX_CLIENT_NAME:-}"]
 
+  # Nightly Postgres backup (see scripts/db_backup.sh). Currently a one-shot
+  # dump: `docker compose --profile backup run --rm backup` writes a dump into
+  # the pgbackup volume. Wire it to cron/systemd on the host for a schedule:
+  #   docker compose --profile backup run --rm backup
+  # Restore via scripts/db_restore.sh (see DEPLOY_PROFEZZO.md runbooks).
+  backup:
+    image: postgres:16-alpine
+    profiles: ["backup"]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-halohubx}
+      BACKUP_DATABASE_URL: postgresql://halohubx:${POSTGRES_PASSWORD:-halohubx}@db:5432/halohubx
+      BACKUP_DIR: /backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - pgbackup:/backups
+      - ./scripts:/scripts:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["cp /scripts/db_backup.sh /tmp/ && chmod +x /tmp/db_backup.sh && /tmp/db_backup.sh"]
+
 volumes:
   pgdata:
   office_ai_data:
   api_uploads:
+  pgbackup:

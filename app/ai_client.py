@@ -11,6 +11,8 @@ from app.config import ANTHROPIC_API_KEY, GEMINI_API_KEY, DEFAULT_AI_PROVIDER
 
 
 class ClaudeClient:
+    provider = "claude"
+
     def __init__(self, api_key: str, model: str = "claude-sonnet-5"):
         from anthropic import Anthropic
 
@@ -32,6 +34,8 @@ class ClaudeClient:
 
 
 class GeminiClient:
+    provider = "gemini"
+
     def __init__(self, api_key: str, model: str = "gemini-3.5-flash"):
         import google.generativeai as genai
 

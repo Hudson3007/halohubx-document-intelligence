@@ -177,6 +177,40 @@ quota, you can top them up, and usage is auditable per document via
   only public `https://` targets are allowed; loopback/RFC1918/cloud-metadata
   hosts are blocked at the single delivery point.
 
+## Observability & backups
+
+### Structured logs (JSON)
+The API emits **one JSON object per log line** by default (`LOG_JSON=1`),
+with queryable fields like `document_id`, `status`, `duration_ms`, and
+`ai_provider`. Every HTTP request logs a structured line. Set `LOG_JSON=0`
+for human-readable text in local dev; `LOG_LEVEL=DEBUG` for verbose output.
+These ship straight into Render / Cloudflare / ELK-style ingestors.
+
+### Health + metrics endpoints
+- `GET /healthz` — liveness (200 when this process is alive).
+- `GET /readyz` — readiness (200 when the DB is reachable, else 503). This is
+  what a load balancer / Docker healthcheck should probe.
+- `GET /metrics` — lightweight **Prometheus-format** counters (HTTP requests
+  by method/status/route, documents processed/failed, webhook deliveries).
+  Point any Prometheus-compatible scraper at it; no extra library needed.
+
+### Backup / DR
+- `scripts/db_backup.sh` dumps any Postgres (compose or cloud/Supabase) to
+  `$BACKUP_DIR/<db>-<timestamp>.sql.gz` and prunes to `BACKUP_KEEP` (default
+  14). Requires `BACKUP_DATABASE_URL`.
+- `scripts/db_restore.sh` restores a dump into a **fresh/empty** database.
+- **Compose:** `docker compose --profile backup run --rm backup` takes a
+  manual/dumped backup into the `pgbackup` volume. Wire it to host cron/systemd
+  for a nightly schedule (one line, see `docker-compose.yml`).
+- **Cloud (Supabase/managed):** point `BACKUP_DATABASE_URL` at the managed DB.
+  Keep the dump off-host (S3/R2) for real DR.
+- The **DR drill is in CI**: every build backs up the live Postgres, restores
+  into a scratch DB, and asserts the data round-trips — so a broken dump is
+  caught automatically, not on the morning of a disaster.
+- **Restore drill:** create an empty DB, `RESTORE_DATABASE_URL=... \
+  scripts/db_restore.sh <dump>.sql.gz`, run `python -m app.init_db` migrations,
+  then repoint `DATABASE_URL`. Never restore into a live production DB.
+
 ---
 
 ## Support / next steps

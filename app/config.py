@@ -40,6 +40,12 @@ MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024))
 # --- Webhook SSRF guard ---
 ALLOW_HTTP_LOOPBACK_WEBHOOKS = os.environ.get("ALLOW_HTTP_LOOPBACK_WEBHOOKS", "false").lower() in ("true", "1", "yes")
 
+# --- Observability ---
+# Emit one JSON object per log line (container default); set LOG_JSON=0 for
+# human-readable text in local dev. LOG_LEVEL is the root log level.
+LOG_JSON = os.environ.get("LOG_JSON", "1").lower() not in ("0", "false", "no")
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+
 # --- Auth hardening ---
 # Console session tokens expire after this many hours (re-issue on login).
 SESSION_TOKEN_TTL_HOURS = int(os.environ.get("SESSION_TOKEN_TTL_HOURS", "12"))

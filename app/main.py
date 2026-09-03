@@ -18,8 +18,13 @@ Before first run, set DATABASE_URL + AI provider key in .env, then:
 
 from datetime import datetime
 
-from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+
+from app.logging_setup import setup_logging, get_logger, elapsed_ms
+setup_logging()
+log = get_logger("main")
 
 from app.db import get_db
 from app.models import Partner, Client, Document, User
@@ -32,6 +37,7 @@ from app.pages import count_pdf_pages
 from app.webhooks import deliver_webhook
 from app import hitl, review, usage, auth_console, audit
 from app.review import save_original_pdf
+from app import health as health_mod
 
 app = FastAPI(title="HaloHubX Document Intelligence API", version="0.1.0")
 app.include_router(hitl.router)
@@ -39,6 +45,34 @@ app.include_router(review.router)
 app.include_router(usage.router)
 app.include_router(auth_console.router)
 app.include_router(audit.router)
+app.include_router(health_mod.router)
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    """Emit one structured JSON log line per request, and feed /metrics."""
+    import time as _t
+    start = _t.monotonic()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        status_code = 500
+        log.exception("unhandled request error", extra={"path": request.url.path})
+        raise
+    finally:
+        dur = round((_t.monotonic() - start) * 1000, 1)
+        health_mod.record_request(
+            request.method, request.url.path, status_code, dur,
+            provider=getattr(request.state, "ai_provider", ""),
+        )
+        log.info("request",
+                 extra={"method": request.method,
+                        "path": request.url.path,
+                        "status": status_code,
+                        "duration_ms": dur})
 
 
 def _get_or_create_client(db: Session, partner: Partner, client_name: str) -> Client:
@@ -62,6 +96,7 @@ def root():
 
 @app.post("/upload")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     client_name: str = Form(...),
     webhook_url: str = Form(None),
@@ -148,6 +183,7 @@ async def upload_document(
     # Charge for the pages now that extraction is about to run.
     charge_pages(db, partner, page_count, now=datetime.utcnow())
 
+    ai_client = None
     try:
         ai_client = get_default_client()
         result = extract_document(ai_client, file_bytes, "application/pdf")
@@ -160,6 +196,14 @@ async def upload_document(
 
     db.commit()
     db.refresh(doc)
+
+    health_mod.record_document(ok=(doc.status == "completed"))
+    provider = getattr(ai_client, "provider", "unknown")
+    request.state.ai_provider = provider or "unknown"
+    log.info("document_processed",
+             extra={"document_id": doc.id, "partner_id": partner.id,
+                    "client_name": client_row.name, "pages": page_count,
+                    "status": doc.status, "ai_provider": provider})
 
     # Store the original file so the HITL / Review Queue UI can show a
     # side-by-side preview while a human corrects the extraction. (This is a
@@ -187,6 +231,7 @@ async def upload_document(
         )
         doc.webhook_delivered = delivered
         db.commit()
+        health_mod.record_webhook(ok=delivered)
 
     return {
         "document_id": doc.id,

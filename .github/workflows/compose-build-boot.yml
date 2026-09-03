@@ -110,6 +110,38 @@ jobs:
                | grep '"status":"completed"'
           curl -sf http://localhost:8000/audit -H "Authorization: Bearer $KEY" | grep '"action":"upload"'
 
+      # --- Phase 1b: Backup/DR smoke. Prove the dump script runs against the
+      # live DB and a restore round-trip brings data back intact (the DR
+      # guarantee). Postgres aborts non-zero if pg_dump fails on a live DB.
+      - name: Backup + restore smoke (DR)
+        run: |
+          set -eux
+          DUMP_DIR=$(mktemp -d)
+          # 1) Run the real backup script (scripts/db_backup.sh, POSIX sh) in
+          #    a postgres container on the compose network.
+          docker run --rm --network halohubx-document-intelligence_default \
+            -v "$PWD/scripts:/scripts:ro" -v "$DUMP_DIR:/backups" \
+            -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            -e BACKUP_DATABASE_URL="postgresql://halohubx:$POSTGRES_PASSWORD@db:5432/halohubx" \
+            -e BACKUP_DIR=/backups -e BACKUP_KEEP=5 \
+            postgres:16-alpine sh /scripts/db_backup.sh
+          DUMP=$(ls -1 "$DUMP_DIR"/*.sql.gz)
+          test -n "$DUMP"
+          echo "dumped: $(basename "$DUMP") ($(du -h "$DUMP" | cut -f1))"
+          # 2) Restore into a scratch DB on the same server, then verify data.
+          docker compose exec -T db psql -U halohubx -d postgres -c "DROP DATABASE IF EXISTS hhx_dr_test"
+          docker compose exec -T db psql -U halohubx -d postgres -c "CREATE DATABASE hhx_dr_test OWNER halohubx"
+          docker run --rm --network halohubx-document-intelligence_default \
+            -v "$DUMP_DIR:/backups:ro" \
+            -e PGPASSWORD="$POSTGRES_PASSWORD" \
+            postgres:16-alpine sh -c \
+            'gzip -dc /backups/*.sql.gz | psql -U halohubx -d hhx_dr_test -v ON_ERROR_STOP=1 -q'
+          N=$(docker compose exec -T db psql -U halohubx -d hhx_dr_test -tAc "SELECT count(*) FROM partners")
+          echo "restored partners in scratch DB: $N"
+          test "$N" -gt 0
+          docker compose exec -T db psql -U halohubx -d postgres -c "DROP DATABASE hhx_dr_test"
+          rm -rf "$DUMP_DIR"
+
       - name: Boot office-ai (Streamlit) and hit its health page
         run: |
           docker compose up -d office-ai
