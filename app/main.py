@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import Partner, Client, Document, User
 from app.auth import get_actor, Actor, require_role
+from app.config import MAX_UPLOAD_BYTES
 from app.extraction import extract_document
 from app.ai_client import get_default_client
 from app.billing import availability, charge_pages
@@ -83,6 +84,30 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
     file_bytes = await file.read()
+
+    # --- Upload safety: size cap + strict PDF validation ---
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum allowed size is {MAX_UPLOAD_BYTES // (1024*1024)} MB.",
+        )
+    if len(file_bytes) < 10:
+        raise HTTPException(status_code=400, detail="File is too small to be a valid PDF.")
+
+    # Strict PDF validation: check magic bytes AND attempt a real parse with
+    # PyMuPDF. This rejects non-PDF files (even if renamed to .pdf), corrupt
+    # PDFs, and polyglot attacks (e.g. a ZIP renamed to .pdf).
+    if not file_bytes.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="File does not appear to be a valid PDF (missing PDF header).")
+    try:
+        import fitz
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            if doc.page_count < 1:
+                raise ValueError("PDF has no pages")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="File could not be parsed as a valid PDF.")
 
     # --- Credit metering: count pages, guarantee budget, charge up-front ---
     # 1 credit = 1 PDF page. We compute pages before creating the Document so

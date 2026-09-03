@@ -28,6 +28,12 @@ WEBHOOK_MAX_RETRIES = int(os.environ.get("WEBHOOK_MAX_RETRIES", "3"))
 # on the same threshold.
 LOW_CONFIDENCE_THRESHOLD = float(os.environ.get("LOW_CONFIDENCE_THRESHOLD", "0.85"))
 
+# --- Upload safety ---
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))  # 25 MB default
+
+# --- Webhook SSRF guard ---
+ALLOW_HTTP_LOOPBACK_WEBHOOKS = os.environ.get("ALLOW_HTTP_LOOPBACK_WEBHOOKS", "false").lower() in ("true", "1", "yes")
+
 # --- Auth hardening ---
 # Console session tokens expire after this many hours (re-issue on login).
 SESSION_TOKEN_TTL_HOURS = int(os.environ.get("SESSION_TOKEN_TTL_HOURS", "12"))
