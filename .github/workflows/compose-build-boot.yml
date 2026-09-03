@@ -135,7 +135,7 @@ jobs:
             -v "$DUMP_DIR:/backups:ro" \
             -e PGPASSWORD="$POSTGRES_PASSWORD" \
             postgres:16-alpine sh -c \
-            'gzip -dc /backups/*.sql.gz | psql -U halohubx -d hhx_dr_test -v ON_ERROR_STOP=1 -q'
+            'gzip -dc /backups/*.sql.gz | psql -h db -p 5432 -U halohubx -d hhx_dr_test -v ON_ERROR_STOP=1 -q'
           N=$(docker compose exec -T db psql -U halohubx -d hhx_dr_test -tAc "SELECT count(*) FROM partners")
           echo "restored partners in scratch DB: $N"
           test "$N" -gt 0
