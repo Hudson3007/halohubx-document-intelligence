@@ -58,7 +58,7 @@ jobs:
           done
           curl -sf http://localhost:8000/ | grep '"status":"ok"'
 
-      - name: Smoke: signup -> upload -> confirm -> audit (in containers)
+      - name: "Smoke: signup -> upload -> confirm -> audit (in containers)"
         run: |
           set -eux
           # The api entrypoint seeds a default partner + (if creds set) a user.
@@ -74,8 +74,8 @@ jobs:
           echo "console token: ${KEY:0:12}..."
 
           # Generate a minimal 1-page PDF inside the api container (has pymupdf) and
-      # upload it from the same container via httpx, which keeps the test
-      # hermetic (no host copy step).
+          # upload it from the same container via httpx, which keeps the test
+          # hermetic (no host copy step).
           DID=$(docker compose exec -T -e CI_KEY="$KEY" api python - <<'EOF'
           import fitz, httpx
           doc = fitz.open(); page = doc.new_page()
