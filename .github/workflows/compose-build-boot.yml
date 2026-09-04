@@ -152,14 +152,16 @@ jobs:
           if echo "$SIGNUP" | grep -q '"api_key"'; then
             echo "FAIL: signup leaked api_key"; exit 1
           fi
-          OWN_TOKEN=$(echo "$SIGNUP" | python -c 'import sys,json;print(json.load(sys.stdin)["session_token"])')
 
-          # And must NOT appear in login either.
+          # And must NOT appear in login either. NOTE: login ROTATES the session
+          # token (mints a fresh one and invalidates the signup token), so we
+          # take OWN_TOKEN from the login response — the current valid token.
           LOGIN=$(curl -s "$BASE/auth/login" -H 'Content-Type: application/json' \
                   -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\"}")
           if echo "$LOGIN" | grep -q '"api_key"'; then
             echo "FAIL: login leaked api_key"; exit 1
           fi
+          OWN_TOKEN=$(echo "$LOGIN" | python -c 'import sys,json;print(json.load(sys.stdin)["session_token"])')
 
           # Owner CAN read the machine key via the owner-only endpoint.
           OWN_PARTNER=$(curl -s "$BASE/auth/partner" -H "Authorization: Bearer $OWN_TOKEN")
