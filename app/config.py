@@ -67,6 +67,36 @@ UPLOAD_DIR = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "uploads"),
 )
 
+# --- Billing / payments (Phase 3b) ---
+# Pricing: 1 credit = 1 PDF page. Purchased credits are added to the partner's
+# top-up pool (never resets). Subscriptions set the monthly quota per period.
+#
+# Price per credit, in Indian paise (100 paise = INR 1). This is a PLACEHOLDER
+# rate for Profezzo to set — change CREDIT_PRICE_PAISE and rebuild/restart.
+CREDIT_PRICE_PAISE = int(os.environ.get("CREDIT_PRICE_PAISE", "200"))  # 200 paise = INR 2/credit (placeholder)
+PAYMENTS_CURRENCY = os.environ.get("PAYMENTS_CURRENCY", "INR")
+
+# Razorpay merchant keys. Empty => the /billing/dev/simulate endpoint (below)
+# can stand in for a real checkout so the whole flow is testable without a
+# merchant account. Never commit real keys.
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "")
+
+# Subscription plans. Each key is a plan id; value is the monthly credit quota
+# that plan grants every period. The free tier ("starter") is the default for
+# every partner; paying plans raise the quota.
+PLAN_QUOTAS = {
+    "starter": int(os.environ.get("PLAN_QUOTA_STARTER", "1000")),
+    "growth": int(os.environ.get("PLAN_QUOTA_GROWTH", "5000")),
+    "scale": int(os.environ.get("PLAN_QUOTA_SCALE", "20000")),
+}
+
+# Dev / simulation gate: when set (default ON in local dev), expose
+# POST /billing/dev/simulate so you can grant credits or switch plans without a
+# real Razorpay merchant. Disabled in production. Never enable in prod.
+ENABLE_DEV_PAYMENTS = os.environ.get("ENABLE_DEV_PAYMENTS", "true").lower() in ("true", "1", "yes")
+
 # --- Startup diagnostic ---
 # Prints once when the app starts, so you can see in the uvicorn terminal
 # exactly what this running process actually loaded — removes any doubt
@@ -80,4 +110,9 @@ print(
     f"GEMINI_API_KEY set={bool(GEMINI_API_KEY)}  "
     f"ANTHROPIC_API_KEY set={bool(ANTHROPIC_API_KEY)}  "
     f"DATABASE_URL set={bool(DATABASE_URL)}"
+)
+print(
+    f"[startup] RAZORPAY_KEY_ID set={bool(RAZORPAY_KEY_ID)}  "
+    f"CREDIT_PRICE_PAISE={CREDIT_PRICE_PAISE}  "
+    f"ENABLE_DEV_PAYMENTS={ENABLE_DEV_PAYMENTS}"
 )

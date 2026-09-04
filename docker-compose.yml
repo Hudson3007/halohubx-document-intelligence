@@ -28,6 +28,14 @@ services:
       # Docker network; force TLS off here (see app/db.py guardrails). The
       # api user is a non-superuser role so no other opt-out is needed.
       DB_SSL_DISABLE: "true"
+      # Billing (Phase 3b). Dev-simulate is OFF in compose by default so a
+      # production stack never exposes it; pass ENABLE_DEV_PAYMENTS=true for
+      # local/CI testing. Razorpay keys are empty unless you supply them.
+      ENABLE_DEV_PAYMENTS: ${ENABLE_DEV_PAYMENTS:-false}
+      CREDIT_PRICE_PAISE: ${CREDIT_PRICE_PAISE:-200}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
     volumes:
       - api_uploads:/srv/data/uploads
     depends_on:

@@ -139,6 +139,43 @@ export async function getUsage(apiKey) {
   return authedFetch(`/usage`, apiKey);
 }
 
+// Billing (Phase 3b): snapshot + plan catalogue + purchase checkout + dev demo.
+export async function getBilling(apiKey) {
+  return authedFetch(`/billing`, apiKey);
+}
+
+export async function getBillingPlans() {
+  return jfetch(`/billing/plans`);
+}
+
+export async function checkoutTopup(apiKey, credits) {
+  return authedFetch(`/billing/checkout/topup`, apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ credits }),
+  });
+}
+
+export async function subscribePlan(apiKey, plan) {
+  return authedFetch(`/billing/subscribe`, apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plan }),
+  });
+}
+
+export async function devSimulateBilling(apiKey, { credits, plan } = {}) {
+  const body = {};
+  if (credits) body.credits = credits;
+  if (plan) body.plan = plan;
+  return authedFetch(`/billing/dev/simulate`, apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+
 // Download the original PDF for side-by-side review (returns a blob URL).
 export async function documentFileUrl(documentId, apiKey) {
   const res = await fetch(`/documents/${documentId}/file`, {

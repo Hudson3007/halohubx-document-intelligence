@@ -3,10 +3,14 @@ import {
   acceptInvite,
   AuthError,
   checkHealth,
+  checkoutTopup,
   confirmDocument,
   createMember,
+  devSimulateBilling,
   documentFileUrl,
   getAudit,
+  getBilling,
+  getBillingPlans,
   getDashboard,
   getDocumentForReview,
   getStatus,
@@ -16,6 +20,7 @@ import {
   login,
   logout,
   signup,
+  subscribePlan,
   uploadDocument,
 } from "./api.js";
 
@@ -723,6 +728,7 @@ const NAV = [
   { id: "upload", label: "Upload", icon: "↑", ownerOnly: true },
   { id: "docs", label: "Documents", icon: "☰" },
   { id: "usage", label: "Usage", icon: "●" },
+  { id: "billing", label: "Billing", icon: "₹", ownerOnly: true },
   { id: "audit", label: "Activity", icon: "◷" },
   { id: "members", label: "Members", icon: "👥", ownerOnly: true },
 ];
@@ -875,6 +881,146 @@ function MembersPanel({ apiKey, currentUser }) {
   );
 }
 
+function fmtPaise(paise) {
+  return `₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
+}
+
+function BillingPanel({ apiKey }) {
+  const [bill, setBill] = useState(null);
+  const [catalogue, setCatalogue] = useState([]);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [topup, setTopup] = useState(1000);
+  const [msg, setMsg] = useState("");
+
+  const load = () => {
+    setErr(""); setMsg("");
+    getBilling(apiKey)
+      .then(setBill)
+      .catch((e) => setErr(String(e.message || e)));
+    getBillingPlans()
+      .then((r) => setCatalogue(r.plans || []))
+      .catch(() => {});
+  };
+  useEffect(load, [apiKey]);
+
+  const run = async (label, fn, successMsg) => {
+    setBusy(label); setErr(""); setMsg("");
+    try {
+      const r = await fn();
+      setMsg(successMsg);
+      load();
+      return r;
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const buyTopup = () =>
+    run("topup", () => checkoutTopup(apiKey, topup),
+      `Checkout created for ${topup} credit(s). Complete payment to add them to your balance.`);
+  const subscribe = (plan) =>
+    run("plan", () => subscribePlan(apiKey, plan), `Subscribed to the ${plan} plan.`);
+  const simulate = (which) =>
+    run("sim", () =>
+      devSimulateBilling(apiKey, which === "plan" ? { plan: "growth" } : { credits: 500 }),
+      which === "plan" ? "Applied the growth plan (demo)." : "Added 500 credit(s) (demo).");
+
+  return (
+    <div className="panel">
+      <div className="recent-head">
+        <div>
+          <h2>Billing &amp; credits</h2>
+          <p className="muted">1 credit = 1 PDF page. Subscriptions set your monthly quota; top-ups add to your pre-paid balance.</p>
+        </div>
+        <button className="ghost" onClick={load}>Refresh</button>
+      </div>
+      {err ? <p className="error">{err}</p> : null}
+      {msg ? <p className="ok">{msg}</p> : null}
+      {!bill && !err ? <p className="muted">Loading…</p> : null}
+
+      {bill ? (
+        <>
+          <CreditMeter usage={bill.usage} />
+          <div className="stat-grid" style={{ marginTop: 22 }}>
+            <div className="stat-card"><span className="stat-num">{bill.plan}</span><span>Plan</span></div>
+            <div className="stat-card"><span className="stat-num">{bill.usage.monthly_quota}</span><span>Monthly quota</span></div>
+            <div className="stat-card"><span className="stat-num">{bill.usage.topup_credits}</span><span>Top-up balance</span></div>
+            <div className="stat-card"><span className="stat-num">{fmtPaise(bill.credit_price_paise)}</span><span>per credit</span></div>
+          </div>
+
+          <h3 style={{ marginTop: 26 }}>Subscription plans</h3>
+          <div className="stat-grid">
+            {catalogue.map((p) => (
+              <div className="stat-card" key={p.id}>
+                <span className="stat-num">{p.id}</span>
+                <span>{p.monthly_quota.toLocaleString("en-IN")} cr/mo · {fmtPaise(p.monthly_price_paise)}/mo</span>
+                <button
+                  className="ghost"
+                  style={{ marginTop: 8 }}
+                  disabled={busy}
+                  onClick={() => subscribe(p.id)}
+                >
+                  {bill.plan === p.id ? "Current plan" : busy === "plan" ? "…" : `Subscribe ${p.id}`}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <h3 style={{ marginTop: 26 }}>Buy top-up credits</h3>
+          <div className="grid2" style={{ maxWidth: 420 }}>
+            <label className="field">
+              <span className="field-label">Credits (non-expiring)</span>
+              <input
+                type="number" min={100} step={100} value={topup}
+                onChange={(e) => setTopup(parseInt(e.target.value, 10) || 0)}
+              />
+            </label>
+            <div className="field"><span className="field-label">&nbsp;</span>
+              <button className="primary" disabled={busy || topup <= 0} onClick={buyTopup}>
+                {busy === "topup" ? "Creating…" : `Buy ${fmtPaise(topup * (bill.credit_price_paise || 0))}`}
+              </button>
+            </div>
+          </div>
+
+          {bill.dev_enabled ? (
+            <div className="invite-result" style={{ marginTop: 20 }}>
+              <span className="muted" style={{ flex: 1 }}>
+                Demo mode (no Razorpay key): grant credits or apply a plan locally.
+              </span>
+              <button className="ghost" disabled={busy} onClick={() => simulate("credits")}>
+                {busy === "sim" ? "…" : "+500 demo credits"}
+              </button>
+              <button className="ghost" disabled={busy} onClick={() => simulate("plan")}>
+                {busy === "sim" ? "…" : "Apply growth plan"}
+              </button>
+            </div>
+          ) : null}
+
+          <h3 style={{ marginTop: 26 }}>Recent orders</h3>
+          {!bill.orders.length ? <p className="muted">No purchases yet.</p> : null}
+          <div className="doc-table">
+            {bill.orders.map((o) => (
+              <div className="doc-row" key={o.id}>
+                <div className="doc-main">
+                  <strong>{o.type === "plan" ? "Plan" : "Top-up"}{o.plan ? ` · ${o.plan}` : ""}</strong>
+                  <span className={`status-badge ${o.status === "paid" ? "" : "warn"}`}>{o.status}</span>
+                </div>
+                <div className="doc-meta">
+                  <span>{o.credits?.toLocaleString("en-IN")} credits · {fmtPaise(o.amount_paise)}</span>
+                  <span>{new Date(o.created_at).toLocaleString()}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState(() => {
     try {
@@ -979,6 +1125,8 @@ export default function App() {
     <DocumentsList apiKey={token} onOpen={(id) => setDocId(id)} />
   ) : tab === "usage" ? (
     <UsagePanel apiKey={token} />
+  ) : tab === "billing" && user?.role !== "analyst" ? (
+    <BillingPanel apiKey={token} />
   ) : tab === "audit" ? (
     <AuditPanel apiKey={token} />
   ) : tab === "members" && user?.role !== "analyst" ? (

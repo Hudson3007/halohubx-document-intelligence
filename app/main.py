@@ -36,6 +36,7 @@ from app.billing import availability, charge_pages
 from app.pages import count_pdf_pages
 from app.webhooks import deliver_webhook
 from app import hitl, review, usage, auth_console, audit
+from app import payments as payments_mod
 from app.review import save_original_pdf
 from app import health as health_mod
 
@@ -46,6 +47,7 @@ app.include_router(usage.router)
 app.include_router(auth_console.router)
 app.include_router(audit.router)
 app.include_router(health_mod.router)
+app.include_router(payments_mod.router)
 
 
 @app.middleware("http")

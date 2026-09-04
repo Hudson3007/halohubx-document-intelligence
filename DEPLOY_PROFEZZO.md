@@ -139,6 +139,40 @@ This is the reseller-friendly model we built with you: your partners get a
 quota, you can top them up, and usage is auditable per document via
 `page_count`.
 
+## Paid billing (Razorpay) — Phase 3b
+
+Real credit purchases are wired to **Razorpay** in a mixed model:
+
+- **Plans**: each subscription tier sets the monthly quota that resets each
+  period (`starter` 1000 / `growth` 5000 / `scale` 20000 credits-month).
+- **Top-ups**: prepaid credit packs, added to the non-expiring balance and
+  consumed before the monthly quota.
+- **Pricing**: a single rate knob, `CREDIT_PRICE_PAISE` (default **200 paise =
+  INR 2 per page**). A plan's monthly price = `quota × CREDIT_PRICE_PAISE`,
+  and a top-up pack = `credits × CREDIT_PRICE_PAISE`. **This rate is a
+  placeholder — change `CREDIT_PRICE_PAISE` and restart to set the real one.**
+
+### Endpoints
+- `GET  /billing/plans` — public plan catalogue (id, quota, price).
+- `GET  /billing` — per-partner snapshot (plan, balance, price, order history).
+- `POST /billing/checkout/topup` (owner) — create a Razorpay order for a pack.
+- `POST /billing/subscribe` (owner) — create/change a subscription plan.
+- `POST /billing/payments/verify` (owner) — verify signature, credit payment.
+- `POST /billing/webhook` — Razorpay webhook (signature-verified, idempotent).
+- `POST /billing/dev/simulate` — **dev/demo ONLY** (gated by
+  `ENABLE_DEV_PAYMENTS`, must be off in production).
+
+The console has a **Billing** tab (owners) to subscribe, buy top-ups, and see
+order history.
+
+### To go live
+1. Create a Razorpay account and set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
+   and `RAZORPAY_WEBHOOK_SECRET` (configure the webhook URL for the
+   `payment.captured` and `subscription.charged/activated` events).
+2. Set the real price in `CREDIT_PRICE_PAISE` and the plan quotas if desired.
+3. **Set `ENABLE_DEV_PAYMENTS=false` in production** so the simulate endpoint
+   is removed.
+
 ---
 
 ## What was fixed vs. the earlier pitch
