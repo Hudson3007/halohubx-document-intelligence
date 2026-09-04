@@ -180,16 +180,18 @@ jobs:
           fi
           ANA_TOKEN=$(echo "$ACCEPT" | python -c 'import sys,json;print(json.load(sys.stdin)["session_token"])')
 
-          # Analyst must be FORBIDDEN from owner-only endpoints (partner config,
-          # owner signup, partner creation)...
+          # Analyst must be FORBIDDEN from owner-only endpoints (partner config
+          # + managing members). NOTE: /auth/signup is intentionally public
+          # (self-serve, creates a NEW tenant, never touches the caller's own
+          # data), so we don't assert 403 on it — that would be wrong.
           curl -s -o /dev/null -w "%{http_code}" "$BASE/auth/partner" \
                -H "Authorization: Bearer $ANA_TOKEN" | grep -q 403 \
                || { echo "FAIL: analyst could read /auth/partner"; exit 1; }
-          curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/auth/signup" \
+          curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/auth/partner/members" \
                -H "Authorization: Bearer $ANA_TOKEN" -H 'Content-Type: application/json' \
-               -d "{\"name\":\"x\",\"email\":\"x_$(date +%s)@example.com\",\"password\":\"CIPass12345!\"}" \
+               -d "{\"email\":\"x_$(date +%s)@example.com\",\"role\":\"analyst\"}" \
                | grep -q 403 \
-               || { echo "FAIL: analyst could sign up a new partner"; exit 1; }
+               || { echo "FAIL: analyst could create a member (owner-only)"; exit 1; }
 
           # ...but MAY do analyst work (read usage, view partner-scoped data).
           curl -sf "$BASE/usage" -H "Authorization: Bearer $ANA_TOKEN" >/dev/null \
