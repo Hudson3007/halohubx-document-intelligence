@@ -512,6 +512,7 @@ button:disabled {
 /* ---------- Desktop partner console (sidebar layout) ---------- */
 .app.desktop {
   display: flex;
+  flex-direction: row;
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;

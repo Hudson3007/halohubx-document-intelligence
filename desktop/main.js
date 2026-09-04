@@ -21,10 +21,22 @@ let mainWindow;
 let server;
 const SERVER_PORT = parseInt(process.env.HALOHUBX_PORT || "17800", 10);
 
-const isPackaged = app.isPackaged;
-const DIST = isPackaged
-  ? path.join(process.resourcesPath, "app-dist")
-  : path.join(__dirname, "..", "frontend", "dist");
+function resolveDist() {
+  if (app.isPackaged) {
+    const p = path.join(process.resourcesPath, "app-dist");
+    if (fs.existsSync(p)) return p;
+  }
+  const candidates = [
+    path.join(__dirname, "..", "frontend", "dist"),
+    path.join(__dirname, "..", "..", "..", "frontend", "dist"),
+    path.join(app.getAppPath(), "..", "frontend", "dist"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "index.html"))) return c;
+  }
+  return candidates[0];
+}
+const DIST = resolveDist();
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -93,6 +105,8 @@ function createServer() {
   server = http.createServer((req, res) => {
     const pathname = url.parse(req.url).pathname;
     if (isApi(pathname)) {
+      proxy(req, res);
+    } else if (pathname === "/" && (!req.headers.accept || !req.headers.accept.includes("text/html"))) {
       proxy(req, res);
     } else {
       serve(req, res);
