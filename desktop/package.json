@@ -1,0 +1,57 @@
+{
+  "name": "halohubx-desktop",
+  "version": "1.0.0",
+  "description": "HaloHubX Document Intelligence — Desktop",
+  "main": "main.js",
+  "author": "Profezzo",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --config",
+    "build:portable": "electron-builder --win portable --config"
+  },
+  "build": {
+    "appId": "com.halohubx.desktop",
+    "productName": "HaloHubX",
+    "copyright": "Copyright 2026 Profezzo",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "app-dist",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HaloHubX",
+      "installerIcon": null,
+      "uninstallerIcon": null
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}

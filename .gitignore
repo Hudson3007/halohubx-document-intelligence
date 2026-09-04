@@ -44,3 +44,6 @@ Thumbs.db
 
 # ---- CI / local tooling ----
 .pycharm*
+# Electron desktop build artifacts
+desktop/node_modules/
+desktop/release/
