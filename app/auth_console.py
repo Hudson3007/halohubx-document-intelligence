@@ -110,7 +110,6 @@ def signup(
     db.refresh(user)
 
     return {
-        "api_key": api_key,
         "session_token": session_token,
         "partner_id": partner.id,
         "partner_name": partner.name,
@@ -181,7 +180,6 @@ def login(
     db.refresh(user)
 
     return {
-        "api_key": partner.api_key,
         "session_token": session_token,
         "partner_id": partner.id,
         "partner_name": partner.name,
@@ -235,6 +233,31 @@ def _partner_for_actor(db: Session, actor: Actor) -> Partner:
     if partner is None:
         raise HTTPException(status_code=404, detail="Partner account not found.")
     return partner
+
+
+@router.get("/partner")
+def get_partner(
+    actor: Actor = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+):
+    """Owner-only: fetch this partner's machine API key + billing snapshot.
+
+    The key is deliberately NOT returned at signup/login/invite-accept (that
+    was a privilege-escalation vector: an analyst handed the owner-level key
+    could call everything as owner). Console humans authenticate with their
+    session token; only an owner can read the machine key here — e.g. to wire
+    up their ERP / sync agent.
+    """
+    partner = _partner_for_actor(db, actor)
+    payload = {
+        "api_key": partner.api_key,
+        "partner_id": partner.id,
+        "partner_name": partner.name,
+        "default_webhook_url": partner.default_webhook_url,
+    }
+    from app.billing import availability
+    payload["credits"] = availability(db, partner).to_dict()
+    return payload
 
 
 @router.get("/partner/members")
@@ -346,7 +369,6 @@ def accept_invite(
     db.commit()
 
     return {
-        "api_key": partner.api_key,
         "session_token": session_token,
         "partner_id": partner.id,
         "partner_name": partner.name,

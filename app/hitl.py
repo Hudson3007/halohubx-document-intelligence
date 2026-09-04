@@ -43,7 +43,7 @@ def list_documents(
         "documents": [
             {
                 "id": d.id,
-                "client_name": _client_name(db, d.client_id),
+                "client_name": _client_name(db, actor.partner_id, d.client_id),
                 "filename": d.filename,
                 "status": d.status,
                 "webhook_delivered": d.webhook_delivered,
@@ -72,7 +72,7 @@ def get_document(
         "document_id": doc.id,
         "filename": doc.filename,
         "status": doc.status,
-        "client_name": _client_name(db, doc.client_id),
+        "client_name": _client_name(db, actor.partner_id, doc.client_id),
         "result": doc.result_json,
         "error": doc.error_message,
     }
@@ -118,7 +118,7 @@ def confirm_document(
             doc.webhook_url,
             {
                 "document_id": doc.id,
-                "client_name": _client_name(db, doc.client_id),
+                "client_name": _client_name(db, actor.partner_id, doc.client_id),
                 "status": doc.status,
                 "result": doc.result_json,
             },
@@ -129,11 +129,15 @@ def confirm_document(
     return {
         "document_id": doc.id,
         "status": doc.status,
-        "client_name": _client_name(db, doc.client_id),
+        "client_name": _client_name(db, actor.partner_id, doc.client_id),
         "webhook_delivered": delivered,
     }
 
 
-def _client_name(db: Session, client_id: str) -> str | None:
-    client = db.query(Client).filter(Client.id == client_id).first()
+def _client_name(db: Session, partner_id: str, client_id: str) -> str | None:
+    client = (
+        db.query(Client)
+        .filter(Client.id == client_id, Client.partner_id == partner_id)
+        .first()
+    )
     return client.name if client else None

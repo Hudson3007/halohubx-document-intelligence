@@ -130,6 +130,66 @@ jobs:
                | grep '"status":"completed"'
           curl -sf http://localhost:8000/audit -H "Authorization: Bearer $KEY" | grep '"action":"upload"'
 
+      # --- Phase 3a: tenant-isolation / privilege-escalation regression.
+      # Guards the HIGH finding: the partner's machine api_key must NOT be
+      # returned at signup/login/invite-accept, it must only be readable by an
+      # OWNER via GET /auth/partner, and an analyst must be 403 on owner-only
+      # endpoints while still able to do analyst work (usage).
+      - name: "Tenant isolation: api_key not leaked; analyst cannot escalate to owner"
+        run: |
+          set -eux
+          BASE=http://localhost:8000
+          EMAIL="iso_$(date +%s)@example.com"
+          PW='IsolationTest123!'
+
+          # API key must NOT appear in the signup response body (owner signup).
+          SIGNUP=$(curl -s "$BASE/auth/signup" -H 'Content-Type: application/json' \
+                   -d "{\"name\":\"Iso Owner\",\"email\":\"$EMAIL\",\"password\":\"$PW\"}")
+          if echo "$SIGNUP" | grep -q '"api_key"'; then
+            echo "FAIL: signup leaked api_key"; exit 1
+          fi
+          OWN_TOKEN=$(echo "$SIGNUP" | python -c 'import sys,json;print(json.load(sys.stdin)["session_token"])')
+
+          # And must NOT appear in login either.
+          LOGIN=$(curl -s "$BASE/auth/login" -H 'Content-Type: application/json' \
+                  -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\"}")
+          if echo "$LOGIN" | grep -q '"api_key"'; then
+            echo "FAIL: login leaked api_key"; exit 1
+          fi
+
+          # Owner CAN read the machine key via the owner-only endpoint.
+          OWN_PARTNER=$(curl -s "$BASE/auth/partner" -H "Authorization: Bearer $OWN_TOKEN")
+          echo "$OWN_PARTNER" | grep -q '"api_key"' || { echo "FAIL: owner could not read api_key"; exit 1; }
+
+          # Invite an analyst; the invite-accept response must NOT carry api_key.
+          INVITE=$(curl -s -X POST "$BASE/auth/partner/members" \
+                   -H "Authorization: Bearer $OWN_TOKEN" -H 'Content-Type: application/json' \
+                   -d "{\"email\":\"ana_$(date +%s)@example.com\",\"role\":\"analyst\"}")
+          INV_TOKEN=$(echo "$INVITE" | python -c 'import sys,json;print(json.load(sys.stdin)["invite_link"].rsplit("/",1)[1])')
+          ACCEPT=$(curl -s -X POST "$BASE/auth/invite/$INV_TOKEN/accept" \
+                   -H 'Content-Type: application/json' \
+                   -d '{"name":"Ana","password":"AnalystPass123!"}')
+          if echo "$ACCEPT" | grep -q '"api_key"'; then
+            echo "FAIL: invite-accept leaked api_key"; exit 1
+          fi
+          ANA_TOKEN=$(echo "$ACCEPT" | python -c 'import sys,json;print(json.load(sys.stdin)["session_token"])')
+
+          # Analyst must be FORBIDDEN from owner-only endpoints (partner config,
+          # owner signup, partner creation)...
+          curl -s -o /dev/null -w "%{http_code}" "$BASE/auth/partner" \
+               -H "Authorization: Bearer $ANA_TOKEN" | grep -q 403 \
+               || { echo "FAIL: analyst could read /auth/partner"; exit 1; }
+          curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/auth/signup" \
+               -H "Authorization: Bearer $ANA_TOKEN" -H 'Content-Type: application/json' \
+               -d "{\"name\":\"x\",\"email\":\"x_$(date +%s)@example.com\",\"password\":\"CIPass12345!\"}" \
+               | grep -q 403 \
+               || { echo "FAIL: analyst could sign up a new partner"; exit 1; }
+
+          # ...but MAY do analyst work (read usage, view partner-scoped data).
+          curl -sf "$BASE/usage" -H "Authorization: Bearer $ANA_TOKEN" >/dev/null \
+               || { echo "FAIL: analyst blocked from usage"; exit 1; }
+          echo "tenant-isolation checks passed (no api_key leak; analyst cannot escalate)"
+
       # --- Phase 1b: Backup/DR smoke. Prove the dump script runs against the
       # live DB and a restore round-trip brings data back intact (the DR
       # guarantee). Postgres aborts non-zero if pg_dump fails on a live DB.

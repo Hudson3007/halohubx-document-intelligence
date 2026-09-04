@@ -86,8 +86,12 @@ def has_low_confidence(result: dict, threshold: float) -> bool:
     return False
 
 
-def _client_name(db: Session, client_id: str) -> str:
-    c = db.query(Client).filter(Client.id == client_id).first()
+def _client_name(db: Session, partner_id: str, client_id: str) -> str:
+    c = (
+        db.query(Client)
+        .filter(Client.id == client_id, Client.partner_id == partner_id)
+        .first()
+    )
     return c.name if c else None
 
 
@@ -146,7 +150,7 @@ def get_document_review(
     return {
         "document_id": doc.id,
         "filename": doc.filename,
-        "client_name": _client_name(db, doc.client_id),
+        "client_name": _client_name(db, actor.partner_id, doc.client_id),
         "status": doc.status,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "low_confidence_threshold": LOW_CONFIDENCE_THRESHOLD,
@@ -207,7 +211,7 @@ def approve_document(
             doc.webhook_url,
             {
                 "document_id": doc.id,
-                "client_name": _client_name(db, doc.client_id),
+                "client_name": _client_name(db, actor.partner_id, doc.client_id),
                 "status": doc.status,
                 "result": doc.result_json,
             },
@@ -218,6 +222,6 @@ def approve_document(
     return {
         "document_id": doc.id,
         "status": doc.status,
-        "client_name": _client_name(db, doc.client_id),
+        "client_name": _client_name(db, actor.partner_id, doc.client_id),
         "webhook_delivered": delivered,
     }
