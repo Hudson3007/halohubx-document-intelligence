@@ -1,5 +1,6 @@
 const { app, BrowserWindow } = require("electron");
 const http = require("http");
+const https = require("https");
 const path = require("path");
 const fs = require("fs");
 const url = require("url");
@@ -27,6 +28,7 @@ function resolveApiBase() {
   if (process.env.HALOHUBX_API) return process.env.HALOHUBX_API;
   try {
     const candidates = [
+      path.join(process.resourcesPath, "api-config.json"),
       path.join(path.dirname(process.execPath), "api-config.json"),
       path.join(__dirname, "api-config.json"),
     ];
@@ -88,23 +90,45 @@ function proxy(req, res) {
     method: req.method,
     headers: Object.assign({}, req.headers, { host: target.host }),
   };
-  const upstream = http.request(opts, (upRes) => {
+  const transport = target.protocol === "https:" ? https : http;
+  const upstream = transport.request(opts, (upRes) => {
+    if (upRes.statusCode >= 300 && upRes.statusCode < 400 && upRes.headers.location) {
+      // Render redirects http -> https and app paths; follow it transparently.
+      const nextBase = new URL(upRes.headers.location, target);
+      const nextOpts = {
+        hostname: nextBase.hostname,
+        port: nextBase.port,
+        path: nextBase.pathname + nextBase.search,
+        method: req.method,
+        headers: Object.assign({}, req.headers, { host: nextBase.host }),
+      };
+      const nextTransport = nextBase.protocol === "https:" ? https : http;
+      const nextReq = nextTransport.request(nextOpts, (nRes) => {
+        res.writeHead(nRes.statusCode, nRes.headers);
+        nRes.pipe(res);
+      });
+      nextReq.on("error", () => upstreamError(res));
+      req.pipe(nextReq);
+      return;
+    }
     res.writeHead(upRes.statusCode, upRes.headers);
     upRes.pipe(res);
   });
-  upstream.on("error", () => {
-    const body = JSON.stringify({
-      error: "backend_unreachable",
-      detail:
-        "API server not running. Start it with:  uvicorn app.main:app --host 127.0.0.1 --port 8000",
-    });
-    res.writeHead(502, {
-      "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*",
-    });
-    res.end(body);
-  });
+  upstream.on("error", () => upstreamError(res));
   req.pipe(upstream);
+}
+
+function upstreamError(res) {
+  const body = JSON.stringify({
+    error: "backend_unreachable",
+    detail:
+      "API server not running. Start it with:  uvicorn app.main:app --host 127.0.0.1 --port 8000",
+  });
+  res.writeHead(502, {
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+  });
+  res.end(body);
 }
 
 function serve(req, res) {
