@@ -94,6 +94,14 @@ class Document(Base):
     webhook_url = Column(String, nullable=True)
     webhook_delivered = Column(Boolean, default=False)
 
+    # Soft delete: when a user removes a document it's flagged here (hidden
+    # from every list) and either purged after the owner's undo window or
+    # kept for the owner's bin approval. Kept instead of a hard DELETE so a
+    # mistake can be reverted and so an analyst's request hits the owner's
+    # approval queue first.
+    deleted_at = Column(DateTime, nullable=True)
+    delete_requested_by = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     completed_at = Column(DateTime, nullable=True)
 

@@ -49,11 +49,12 @@ class Actor:
     """A resolved caller: either a machine API key (role=owner, backward
     compatible) or a signed-in console user (role from their account)."""
 
-    def __init__(self, partner_id: str, role: str, source: str, email: str | None = None):
+    def __init__(self, partner_id: str, role: str, source: str, email: str | None = None, user_id: str | None = None):
         self.partner_id = partner_id
         self.role = role
         self.source = source  # "api_key" | "session"
         self.email = email
+        self.user_id = user_id  # set for console session actors; None for machine API keys
 
     @property
     def is_owner(self) -> bool:
@@ -83,7 +84,7 @@ def get_actor(
     user = db.query(User).filter(User.session_token == token).first()
     if user is not None:
         _assert_session_valid(user)
-        return Actor(partner_id=user.partner_id, role=user.role, source="session", email=user.email)
+        return Actor(partner_id=user.partner_id, role=user.role, source="session", email=user.email, user_id=str(user.id))
 
     raise HTTPException(status_code=401, detail="Invalid token")
 

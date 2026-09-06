@@ -37,6 +37,8 @@ from app.pages import count_pdf_pages
 from app.webhooks import deliver_webhook
 from app import hitl, review, usage, auth_console, audit
 from app import payments as payments_mod
+from app import search as search_mod
+from app import batch as batch_mod
 from app.review import save_original_pdf
 from app import health as health_mod
 
@@ -48,6 +50,8 @@ app.include_router(auth_console.router)
 app.include_router(audit.router)
 app.include_router(health_mod.router)
 app.include_router(payments_mod.router)
+app.include_router(search_mod.router)
+app.include_router(batch_mod.router)
 
 
 @app.middleware("http")
@@ -194,7 +198,8 @@ async def upload_document(
         doc.completed_at = datetime.utcnow()
     except Exception as e:
         doc.status = "failed"
-        doc.error_message = str(e)
+        from app.ai_client import _summarize_error
+        doc.error_message = _summarize_error(e)
 
     db.commit()
     db.refresh(doc)
@@ -249,7 +254,7 @@ def get_status(
     actor: Actor = Depends(get_actor),
     db: Session = Depends(get_db),
 ):
-    doc = db.query(Document).filter(Document.id == document_id, Document.partner_id == actor.partner_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.partner_id == actor.partner_id, Document.deleted_at.is_(None)).first()
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     return {
@@ -269,7 +274,7 @@ def retrieve_result(
     actor: Actor = Depends(get_actor),
     db: Session = Depends(get_db),
 ):
-    doc = db.query(Document).filter(Document.id == document_id, Document.partner_id == actor.partner_id).first()
+    doc = db.query(Document).filter(Document.id == document_id, Document.partner_id == actor.partner_id, Document.deleted_at.is_(None)).first()
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found")
     if doc.status != "completed":

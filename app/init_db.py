@@ -32,6 +32,8 @@ MIGRATIONS = [
     "ALTER TABLE partners ADD COLUMN IF NOT EXISTS plan VARCHAR DEFAULT 'starter'",
     "ALTER TABLE partners ADD COLUMN IF NOT EXISTS razorpay_customer_id VARCHAR",
     "ALTER TABLE partners ADD COLUMN IF NOT EXISTS subscription_id VARCHAR",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS delete_requested_by VARCHAR",
 ]
 
 

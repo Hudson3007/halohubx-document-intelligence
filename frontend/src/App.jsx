@@ -21,11 +21,82 @@ import {
   logout,
   signup,
   subscribePlan,
+  updateMember,
+  removeMember,
+  uploadBatch,
+  batchStatus,
+  retryFailed,
   uploadDocument,
+  deleteDocument,
+  restoreDocument,
+  approveDelete,
+  getBin,
+  verifyPayment,
+  searchDocuments,
 } from "./api.js";
 
 const THRESHOLD = 0.85;
 const SESSION_KEY = "halohubx.session.v1";
+
+// --- Toast feedback (event-based, mounted once in the app shell) ---
+const TOAST_EVENT = "halohubx-toast";
+export function toast(message, type = "ok", opts = {}) {
+  try {
+    window.dispatchEvent(new CustomEvent(TOAST_EVENT, { detail: { message, type, ...opts } }));
+  } catch { /* ignore */ }
+}
+
+function ToastItem({ t, onDone }) {
+  const [left, setLeft] = useState(t.undoSecs ? t.undoSecs : null);
+  useEffect(() => {
+    if (!t.undoSecs) return;
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      const el = t.undoSecs - Math.floor((Date.now() - t0) / 1000);
+      setLeft(Math.max(0, el));
+      if (el <= 0) clearInterval(iv);
+    }, 200);
+    return () => clearInterval(iv);
+  }, []);
+  return (
+    <div className={`toast ${t.type === "err" ? "err" : "ok"}`}>
+      <span className="toast-msg">{t.message}</span>
+      {t.actionLabel ? (
+        <button
+          className="toast-action"
+          onClick={() => { t.onAction?.(); onDone(); }}
+        >
+          {t.actionLabel}{left != null ? ` (${left}s)` : ""}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ToastHost() {
+  const [items, setItems] = useState([]);
+  useEffect(() => {
+    const onToast = (e) => {
+      const id = Math.random().toString(36).slice(2);
+      const dur = e.detail.undoSecs ? e.detail.undoSecs * 1000 : 4500;
+      setItems((prev) => [...prev, { id, ...e.detail }]);
+      setTimeout(() => setItems((prev) => prev.filter((t) => t.id !== id)), dur);
+    };
+    window.addEventListener(TOAST_EVENT, onToast);
+    return () => window.removeEventListener(TOAST_EVENT, onToast);
+  }, []);
+  return (
+    <div className="toast-host">
+      {items.map((t) => (
+        <ToastItem
+          key={t.id}
+          t={t}
+          onDone={() => setItems((prev) => prev.filter((x) => x.id !== t.id))}
+        />
+      ))}
+    </div>
+  );
+}
 
 function confidenceClass(score) {
   if (score == null) return "conf-low";
@@ -149,6 +220,7 @@ function ReviewPanel({ docId, apiKey, onReset }) {
   const [message, setMessage] = useState("");
   const [pdfUrl, setPdfUrl] = useState(null);
   const [pdfError, setPdfError] = useState("");
+  const [removeTarget, setRemoveTarget] = useState(null); // invoice index awaiting confirmation
   const timer = useRef(null);
 
   // Load the original PDF for side-by-side review once the document resolves.
@@ -199,6 +271,7 @@ function ReviewPanel({ docId, apiKey, onReset }) {
       const r = await confirmDocument(docId, apiKey, result);
       setConfirmState("done");
       setMessage(`Confirmed. Status: ${r.status}${r.webhook_delivered ? " — webhook delivered." : ""}`);
+      toast(`Approved — ${r.status}${r.webhook_delivered ? " · webhook delivered" : ""}`);
     } catch (e) {
       setConfirmState("idle");
       setError(String(e.message || e));
@@ -219,6 +292,29 @@ function ReviewPanel({ docId, apiKey, onReset }) {
         invoice_count: d.result.invoices.length - 1,
       },
     }));
+
+  const doRemoveInvoice = () => {
+    const i = removeTarget;
+    if (i == null) return;
+    setRemoveTarget(null);
+    const removedInv = data?.result?.invoices?.[i];
+    removeInvoice(i);
+    // Undo window: if the user grabs it fast enough, re-insert right back at
+    // the same slot so line-item edits made before removal survive too.
+    toast(`Removed invoice #${i + 1}`, "err", {
+      actionLabel: "Undo",
+      undoSecs: 5,
+      onAction: () => {
+        setData((d) => {
+          if (!d || !removedInv) return d;
+          const invoices = [...d.result.invoices];
+          invoices.splice(Math.min(i, invoices.length), 0, removedInv);
+          return { ...d, result: { ...d.result, invoices, invoice_count: invoices.length } };
+        });
+        toast("Invoice restored.");
+      },
+    });
+  };
 
   if (error) {
     return (
@@ -267,7 +363,8 @@ function ReviewPanel({ docId, apiKey, onReset }) {
       <div className="review-split">
         <div className="review-editors">
           {invoices.map((inv, i) => (
-            <InvoiceEditor key={i} invoice={inv} index={i} onChange={editInvoice} onRemove={removeInvoice} />
+            <InvoiceEditor key={i} invoice={inv} index={i} onChange={editInvoice}
+                           onRemove={() => setRemoveTarget(i)} />
           ))}
         </div>
 
@@ -297,58 +394,234 @@ function ReviewPanel({ docId, apiKey, onReset }) {
         </button>
       </div>
       {message ? <p className="ok">{message}</p> : null}
+
+      {removeTarget != null ? (
+        <ConfirmModal
+          title="Remove invoice?"
+          body={`This action cannot be reverted. Invoice #${removeTarget + 1} will be removed from the extracted result. You can undo for 5 seconds. I understand.`}
+          confirmLabel="Remove invoice"
+          onCancel={() => setRemoveTarget(null)}
+          onConfirm={doRemoveInvoice}
+        />
+      ) : null}
     </div>
   );
 }
 
-function UploadPanel({ apiKey, onUploaded }) {
-  const [file, setFile] = useState(null);
+function UploadPanel({ apiKey, onUploaded, onGotoDocs }) {
+  const [files, setFiles] = useState([]);
   const [clientName, setClientName] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
-  const [buisy, setBuisy] = useState(false);
+  const [phase, setPhase] = useState("select"); // select | uploading | processing | done
+  const [uploaded, setUploaded] = useState(0);
+  const [docs, setDocs] = useState([]); // {document_id, filename, status, error}
+  const [rejected, setRejected] = useState([]); // {filename, reason}
   const [err, setErr] = useState("");
+  const [retrying, setRetrying] = useState(false);
+  const docsRef = useRef({});
+  const timerRef = useRef(null);
 
-  const doUpload = async () => {
-    if (!file || !clientName.trim()) {
-      setErr("Select a file and enter a client name.");
-      return;
-    }
+  const CHUNK = 20; // files per /upload/batch request (keeps each request small)
+
+  const pick = (e) => {
+    const list = Array.from(e.target.files || []);
+    setFiles(list);
     setErr("");
-    setBuisy(true);
+    setRejected([]);
+    setDocs([]);
+    setUploaded(0);
+    setPhase("select");
+  };
+
+  const clearAll = () => {
+    if (phase === "uploading" || phase === "processing") return;
+    setFiles([]);
+    setDocs([]);
+    setRejected([]);
+    setUploaded(0);
+    setPhase("select");
+  };
+
+  const retryFails = async () => {
+    setRetrying(true);
     try {
-      const r = await uploadDocument(file, { apiKey, clientName, webhookUrl: webhookUrl.trim() });
-      setBuisy(false);
-      onUploaded(r.document_id);
+      const r = await retryFailed(apiKey, true);
+      setRetrying(false);
+      if (r.queued > 0) {
+        toast(`Re-queued ${r.queued} failed document${r.queued !== 1 ? "s" : ""}.`);
+        onGotoDocs();
+      } else {
+        toast("No failed documents to retry.", "err");
+      }
     } catch (e) {
-      setBuisy(false);
-      setErr(String(e.message || e));
+      setRetrying(false);
+      toast("Could not retry failed documents.", "err");
     }
   };
+
+  const doUpload = async () => {
+    if (!files.length) { setErr("Select at least one PDF file."); return; }
+    if (!clientName.trim()) { setErr("Enter a client name for this batch."); return; }
+    setErr("");
+    setPhase("uploading");
+    setUploaded(0);
+    const map = {};
+    const rej = [];
+    try {
+      for (let i = 0; i < files.length; i += CHUNK) {
+        const chunk = files.slice(i, i + CHUNK);
+        const r = await uploadBatch(chunk, { apiKey, clientName, webhookUrl: webhookUrl.trim() });
+        for (const d of r.documents || []) map[d.document_id] = { ...d, error: null };
+        for (const rj of r.rejected || []) rej.push(rj);
+        setUploaded(Math.min(files.length, i + chunk.length));
+      }
+      docsRef.current = map;
+      setDocs(Object.values(map));
+      setRejected(rej);
+      setPhase("processing");
+    } catch (e) {
+      setPhase("select");
+      let msg = String(e.message || e);
+      try {
+        const parsed = JSON.parse(msg.slice(msg.indexOf(":") + 1).trim());
+        msg = parsed.message || (parsed.error === "insufficient_credits" ? parsed.message : msg);
+      } catch { /* keep raw */ }
+      setErr(msg);
+    }
+  };
+
+  useEffect(() => {
+    if (phase !== "processing") return;
+    const ids = Object.keys(docsRef.current);
+    if (!ids.length) { setPhase("done"); return; }
+    const poll = async () => {
+      try {
+        const r = await batchStatus(ids, apiKey);
+        let pending = 0;
+        for (const d of r.documents || []) {
+          if (docsRef.current[d.document_id]) {
+            docsRef.current[d.document_id].status = d.status;
+            docsRef.current[d.document_id].error = d.error;
+          }
+          if (d.status !== "completed" && d.status !== "failed") pending++;
+        }
+        setDocs(Object.values(docsRef.current));
+        if (pending === 0) {
+          clearInterval(timerRef.current);
+          const done = Object.values(docsRef.current).filter((d) => d.status === "completed").length;
+          toast(`Batch finished — ${done} of ${ids.length} documents extracted.`);
+          setPhase("done");
+        }
+      } catch { /* transient failure; keep polling */ }
+    };
+    poll();
+    timerRef.current = setInterval(poll, 2500);
+    return () => clearInterval(timerRef.current);
+  }, [phase]);
+
+  const totalFiles = files.length;
+  const doneCount = docs.filter((d) => d.status === "completed").length;
+  const failedCount = docs.filter((d) => d.status === "failed").length;
+
+  const statusClass = (s) =>
+    s === "completed" ? "ok" : s === "failed" ? "error" : "muted";
 
   return (
     <div className="upload">
       <div className="hero">
         <h1>HaloHubX Document Engine</h1>
-        <p className="muted">Upload a GST invoice / PO — review what the model extracted — push to your ERP.</p>
+        <p className="muted">Upload GST invoices / POs in bulk — pick hundreds of PDFs at once.</p>
       </div>
-      <div className="card">
-        <label className="field">
-          <span className="field-label">Client name</span>
-          <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g. InfraBuild Steels Pvt Ltd" />
-        </label>
-        <label className="field">
-          <span className="field-label">Webhook URL (optional)</span>
-          <input value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://your-erp.example.com/webhook" />
-        </label>
-        <label className="drop">
-          <input type="file" accept=".pdf" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          {file ? <strong>{file.name}</strong> : <span>Drop a PDF here or click to browse</span>}
-        </label>
-        {err ? <p className="error">{err}</p> : null}
-        <button className="primary big" disabled={buisy || !file} onClick={doUpload}>
-          {buisy ? "Uploading…" : "Upload & extract"}
-        </button>
-      </div>
+
+      {phase === "select" ? (
+        <div className="card">
+          <label className="field">
+            <span className="field-label">Client name (applies to this whole batch)</span>
+            <input value={clientName} onChange={(e) => setClientName(e.target.value)} placeholder="e.g. InfraBuild Steels Pvt Ltd" />
+          </label>
+          <label className="field">
+            <span className="field-label">Webhook URL (optional)</span>
+            <input value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://your-erp.example.com/webhook" />
+          </label>
+          <label className="drop">
+            <input type="file" accept=".pdf" multiple onChange={pick} />
+            {files.length ? (
+              <strong>{files.length} file{files.length !== 1 ? "s" : ""} selected</strong>
+            ) : (
+              <span>Drop PDFs here or click to browse — select multiple / Ctrl+A a folder</span>
+            )}
+          </label>
+          {files.length > 0 && (
+            <div className="file-preview">
+              {files.slice(0, 5).map((f) => (
+                <span key={f.name} className="file-chip">{f.name}</span>
+              ))}
+              {files.length > 5 && (
+                <span className="file-chip muted">+{files.length - 5} more…</span>
+              )}
+              <button className="link" onClick={clearAll}>Clear</button>
+            </div>
+          )}
+          {err ? <p className="error">{err}</p> : null}
+          <button className="primary big" disabled={!files.length || !clientName.trim()} onClick={doUpload}>
+            {files.length ? `Upload & extract ${files.length} document${files.length !== 1 ? "s" : ""}` : "Upload & extract"}
+          </button>
+        </div>
+      ) : null}
+
+      {phase === "uploading" ? (
+        <div className="card">
+          <strong className="field-label">Uploading…</strong>
+          <div className="bar"><div className="bar-fill" style={{ width: `${(uploaded / totalFiles) * 100}%` }} /></div>
+          <p className="muted">{uploaded} / {totalFiles} files sent</p>
+        </div>
+      ) : null}
+
+      {(phase === "processing" || phase === "done") ? (
+        <div className="card">
+          <strong className="field-label">{phase === "processing" ? "Extracting in the background…" : "Batch complete"}</strong>
+          <div className="bar"><div className="bar-fill" style={{ width: `${((doneCount + failedCount) / Math.max(1, totalFiles)) * 100}%` }} /></div>
+          <p className="muted">
+            {doneCount} done · {failedCount} failed · {totalFiles - doneCount - failedCount} in progress
+          </p>
+
+          {rejected.length > 0 && (
+            <div className="rejected-list">
+              <strong className="field-label">Skipped {rejected.length} invalid file{rejected.length !== 1 ? "s" : ""}</strong>
+              {rejected.slice(0, 8).map((r) => (
+                <p key={r.filename} className="error small">{r.filename} — {r.reason}</p>
+              ))}
+              {rejected.length > 8 && <p className="muted small">…and {rejected.length - 8} more</p>}
+            </div>
+          )}
+
+          {docs.length > 0 && (
+            <div className="batch-list">
+              {docs.slice(0, 12).map((d) => (
+                <div key={d.document_id} className="batch-row">
+                  <span className="file-chip">{d.filename}</span>
+                  <span className={statusClass(d.status)}>{d.status}</span>
+                </div>
+              ))}
+              {docs.length > 12 && (
+                <div className="batch-row"><span className="muted">…and {docs.length - 12} more files</span></div>
+              )}
+            </div>
+          )}
+
+          {phase === "done" ? (
+            <div className="row gap">
+              <button className="primary" onClick={() => onGotoDocs()}>View documents</button>
+              {failedCount > 0 && (
+                <button className="ghost" disabled={retrying} onClick={retryFails}>
+                  {retrying ? "Retrying…" : `Retry ${failedCount} failed`}
+                </button>
+              )}
+              <button className="ghost" onClick={clearAll}>Upload more</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -362,10 +635,16 @@ function fmtDate(iso) {
   }
 }
 
-function DocsTable({ docs, loading, error, onOpen, empty }) {
+function DocsTable({ docs, loading, error, onOpen, empty, onDelete, role }) {
   if (error) return <p className="error">{error}</p>;
   if (loading) return <p className="muted">Loading…</p>;
-  if (!docs.length) return <p className="muted">{empty || "No documents yet. Upload one first."}</p>;
+  if (!docs.length) return (
+    <div className="empty-state">
+      <span className="empty-emoji">📄</span>
+      <h3>{empty || "No documents yet"}</h3>
+      <p className="muted">Upload one to start extracting invoice data.</p>
+    </div>
+  );
   return (
     <div className="doc-table">
       {docs.map((d) => (
@@ -380,7 +659,18 @@ function DocsTable({ docs, loading, error, onOpen, empty }) {
             <span>{d.invoice_count ? `${d.invoice_count} invoice(s)` : "—"}</span>
             <span>{fmtDate(d.created_at)}</span>
           </div>
-          <button className="ghost" onClick={() => onOpen(d.document_id)}>Review</button>
+          <div className="row-gap">
+            <button className="ghost" onClick={() => onOpen(d.document_id)}>Review</button>
+            {onDelete ? (
+              <button
+                className="ghost danger"
+                title={role === "analyst" ? "Request owner to delete" : "Delete document"}
+                onClick={() => onDelete(d)}
+              >
+                Delete
+              </button>
+            ) : null}
+          </div>
         </div>
       ))}
     </div>
@@ -452,7 +742,7 @@ function UsagePanel({ apiKey }) {
   );
 }
 
-function DashboardPanel({ apiKey, onOpenDoc, onGotoUpload }) {
+function DashboardPanel({ apiKey, onOpenDoc, onGotoUpload, onGotoDocs }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -497,6 +787,10 @@ function DashboardPanel({ apiKey, onOpenDoc, onGotoUpload }) {
           <p className="muted">Overview of extraction activity for this partner.</p>
         </div>
         <div className="row-gap">
+          <button className="add-doc-btn" onClick={onGotoDocs}>
+            <span className="add-doc-ico">+</span>
+            <span>Add document</span>
+          </button>
           <select className="select" value={client} onChange={(e) => setClient(e.target.value)}>
             {clientList.map((c) => (
               <option key={c} value={c}>{c === "all" ? "All clients" : c}</option>
@@ -526,19 +820,161 @@ function DashboardPanel({ apiKey, onOpenDoc, onGotoUpload }) {
   );
 }
 
-function DocumentsList({ apiKey, onOpen }) {
+function useDocumentDelete({ apiKey, role, onDeleted }) {
+  const [pending, setPending] = useState(null); // doc awaiting confirmation
+
+  const confirmDelete = async (doc) => {
+    const r = await deleteDocument(doc.document_id, apiKey);
+    if (r.status === "already_deleted") { onDeleted?.(); return; }
+    toast(`Deleted ${doc.filename || "document"}${role === "analyst" ? " — sent to owner for approval" : ""}`, "err", {
+      actionLabel: role === "owner" ? "Undo" : null,
+      undoSecs: role === "owner" ? 5 : null,
+      onAction: () => {
+        restoreDocument(doc.document_id, apiKey).then(() => {
+          toast(`Restored ${doc.filename || "document"}.`);
+          onDeleted?.();
+        }).catch(() => {});
+      },
+    });
+    onDeleted?.();
+  };
+
+  const confirmPurge = async (doc) => {
+    await approveDelete(doc.document_id, apiKey);
+    toast(`Permanently deleted ${doc.filename || "document"}.`, "err");
+    onDeleted?.();
+  };
+
+  const confirmRestore = async (doc) => {
+    await restoreDocument(doc.document_id, apiKey);
+    toast(`Restored ${doc.filename || "document"} from the bin.`);
+    onDeleted?.();
+  };
+
+  return { pending, setPending, confirmDelete, confirmPurge, confirmRestore };
+}
+
+function ConfirmModal({ title, body, confirmLabel, onConfirm, onCancel, busy }) {
+  return (
+    <div className="modal-overlay" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{title}</h3>
+        <p className="modal-body">{body}</p>
+        <div className="row gap" style={{ justifyContent: "flex-end" }}>
+          <button className="ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="primary danger-solid" onClick={onConfirm} disabled={busy}>
+            {busy ? "Working…" : confirmLabel || "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BinList({ items, loading, error, onApprove, onRestore, busy }) {
+  if (error) return <p className="error">{error}</p>;
+  if (loading) return <p className="muted">Loading…</p>;
+  if (!items.length) return (
+    <div className="empty-state">
+      <span className="empty-emoji">🗑️</span>
+      <h3>Bin is empty</h3>
+      <p className="muted">Documents deleted by analysts wait here for your approval.</p>
+    </div>
+  );
+  return (
+    <div className="doc-table">
+      {items.map((d) => (
+        <div className="doc-row" key={d.document_id}>
+          <div className="doc-main">
+            <strong title={d.document_id}>{d.filename}</strong>
+            <span className="status-badge warn">Pending deletion</span>
+          </div>
+          <div className="doc-meta">
+            <span>Asked by: {d.requested_by || "—"}</span>
+            <span>{fmtDate(d.deleted_at)}</span>
+          </div>
+          <div className="row-gap">
+            <button className="primary" disabled={busy} onClick={() => onApprove(d)}>Approve delete</button>
+            <button className="ghost" disabled={busy} onClick={() => onRestore(d)}>Restore</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DocumentsList({ apiKey, role, onOpen, initialClient }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [client, setClient] = useState("all");
+  const [client, setClient] = useState(initialClient || "all");
+  const [showBin, setShowBin] = useState(false);
+  const [binItems, setBinItems] = useState([]);
+  const [binLoading, setBinLoading] = useState(false);
+  const [binErr, setBinErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [purgeTarget, setPurgeTarget] = useState(null);
+
+  const isOwner = role !== "analyst";
+
   const load = () => {
     setLoading(true);
+    setErr("");
     getDashboard(apiKey)
       .then((d) => setDocs(d))
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setLoading(false));
   };
+  const dl = useDocumentDelete({ apiKey, role, onDeleted: load });
   useEffect(load, [apiKey]);
+
+  const loadBin = () => {
+    if (!isOwner) return;
+    setBinLoading(true);
+    setBinErr("");
+    getBin(apiKey)
+      .then((r) => setBinItems(r.documents || []))
+      .catch((e) => setBinErr(String(e.message || e)))
+      .finally(() => setBinLoading(false));
+  };
+  useEffect(() => { if (showBin) loadBin(); }, [showBin, apiKey]);
+
+  const doDelete = async (doc) => {
+    setBusy(true);
+    try {
+      await dl.confirmDelete(doc);
+      setBusy(false);
+      dl.setPending(null);
+    } catch (e) {
+      setBusy(false);
+      toast("Delete failed: " + String(e.message || e), "err");
+    }
+  };
+
+  const doPurge = async (doc) => {
+    setBusy(true);
+    try {
+      await dl.confirmPurge(doc);
+      setBusy(false);
+      setPurgeTarget(null);
+      loadBin();
+    } catch (e) {
+      setBusy(false);
+      toast("Delete failed: " + String(e.message || e), "err");
+    }
+  };
+
+  const doRestore = async (doc) => {
+    setBusy(true);
+    try {
+      await dl.confirmRestore(doc);
+      setBusy(false);
+      loadBin();
+    } catch (e) {
+      setBusy(false);
+      toast("Restore failed: " + String(e.message || e), "err");
+    }
+  };
 
   const clients = useMemo(() => ["all", ...new Set(docs.map((d) => d.client_name).filter((c) => c && c !== "—"))], [docs]);
   const filtered = useMemo(
@@ -550,17 +986,54 @@ function DocumentsList({ apiKey, onOpen }) {
     <div className="panel">
       <div className="recent-head">
         <div>
-          <h2>Documents</h2>
-          <p className="muted">Every document uploaded for this partner.</p>
+          <h2>{isOwner ? "Documents & Bin" : "Documents"}</h2>
+          <p className="muted">{isOwner ? "Manage the workspace. Deleted items wait here for you to approve or restore." : "Review documents. Deletes need owner approval."}</p>
         </div>
         <div className="row-gap">
+          {isOwner ? (
+            <button className={`ghost ${showBin ? "active" : ""}`} onClick={() => setShowBin((v) => !v)}>
+              {showBin ? "Show documents" : `Bin (${binItems.length})`}
+            </button>
+          ) : null}
           <select className="select" value={client} onChange={(e) => setClient(e.target.value)}>
             {clients.map((c) => <option key={c} value={c}>{c === "all" ? "All clients" : c}</option>)}
           </select>
-          <button className="ghost" onClick={load}>Refresh</button>
+          <button className="ghost" onClick={() => (showBin ? loadBin() : load())}>Refresh</button>
         </div>
       </div>
-      <DocsTable docs={filtered} loading={loading} error={err} onOpen={onOpen} />
+
+      {showBin ? (
+        <BinList items={binItems} loading={binLoading} error={binErr}
+                 onApprove={(d) => setPurgeTarget(d)} onRestore={doRestore} busy={busy} />
+      ) : (
+        <DocsTable docs={filtered} loading={loading} error={err} onOpen={onOpen}
+                   onDelete={(d) => dl.setPending(d)} role={role}
+                   empty={client === "all" ? "No documents yet. Upload one first." : "No documents for this client yet."} />
+      )}
+
+      {dl.pending && !showBin ? (
+        <ConfirmModal
+          title="Delete document?"
+          body={role === "analyst"
+            ? "This action cannot be reverted once approved. The owner will be notified and the deletion stays in the bin until they approve it."
+            : `This action cannot be reverted. This will delete the extraction for "${dl.pending.filename}". You can undo for 5 seconds. I understand.`}
+          confirmLabel="Delete"
+          busy={busy}
+          onCancel={() => dl.setPending(null)}
+          onConfirm={() => doDelete(dl.pending)}
+        />
+      ) : null}
+
+      {purgeTarget ? (
+        <ConfirmModal
+          title="Permanently delete?"
+          body={`This action cannot be reverted. The document "${purgeTarget.filename}" and its stored PDF will be permanently removed. I understand.`}
+          confirmLabel="Delete forever"
+          busy={busy}
+          onCancel={() => setPurgeTarget(null)}
+          onConfirm={() => doPurge(purgeTarget)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -723,14 +1196,72 @@ function InviteAccept({ token, onAuthenticated }) {
   );
 }
 
+function Icon({ name, size = 20 }) {
+  const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
+  switch (name) {
+    case "dashboard":
+      return <svg {...p}><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></svg>;
+    case "upload":
+      return <svg {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>;
+    case "docs":
+      return <svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>;
+    case "search":
+      return <svg {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>;
+    case "usage":
+      return <svg {...p}><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>;
+    case "billing":
+      return <svg {...p}><rect x="2" y="4" width="20" height="16" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>;
+    case "audit":
+      return <svg {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>;
+    case "members":
+      return <svg {...p}><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>;
+    case "settings":
+      return <svg {...p}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>;
+    case "logout":
+      return <svg {...p}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></svg>;
+    default:
+      return null;
+  }
+}
+
+function SettingsPanel({ user, partnerName, onSignOut }) {
+  const initials = (user?.name || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() || "")
+    .join("");
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Profile & Settings</h2>
+          <p className="muted">Your account details and session info.</p>
+        </div>
+      </div>
+      <div className="profile-card">
+        <div className="avatar">{initials || "U"}</div>
+        <div className="profile-meta">
+          <h3>{user?.name || "Console user"}</h3>
+          <p className="muted">{user?.email || "—"}</p>
+          <p className="muted">Partner: <strong>{partnerName || "—"}</strong></p>
+          <span className="role-tag">{user?.role === "analyst" ? "Analyst" : "Owner"}</span>
+        </div>
+        <button className="ghost" onClick={onSignOut}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
 const NAV = [
-  { id: "dashboard", label: "Dashboard", icon: "▦" },
-  { id: "upload", label: "Upload", icon: "↑", ownerOnly: true },
-  { id: "docs", label: "Documents", icon: "☰" },
-  { id: "usage", label: "Usage", icon: "●" },
-  { id: "billing", label: "Billing", icon: "₹", ownerOnly: true },
-  { id: "audit", label: "Activity", icon: "◷" },
-  { id: "members", label: "Members", icon: "👥", ownerOnly: true },
+  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
+  { id: "upload", label: "Upload", icon: "upload", ownerOnly: true },
+  { id: "docs", label: "Documents", icon: "docs" },
+  { id: "search", label: "Search", icon: "search" },
+  { id: "usage", label: "Usage", icon: "usage" },
+  { id: "billing", label: "Billing", icon: "billing", ownerOnly: true },
+  { id: "audit", label: "Activity", icon: "audit" },
+  { id: "members", label: "Members", icon: "members", ownerOnly: true },
 ];
 
 function actionLabel(action) {
@@ -801,6 +1332,9 @@ function MembersPanel({ apiKey, currentUser }) {
   const [busy, setBusy] = useState(false);
   const [inviteLink, setInviteLink] = useState("");
   const [copied, setCopied] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", email: "", role: "analyst" });
+  const [removeTarget, setRemoveTarget] = useState(null);
 
   const load = () => {
     setErr("");
@@ -815,6 +1349,7 @@ function MembersPanel({ apiKey, currentUser }) {
       const r = await createMember(apiKey, { email: form.email.trim(), name: form.name.trim() || undefined, role: form.role });
       setForm({ name: "", email: "", role: "analyst" });
       setInviteLink(`${window.location.origin}${r.invite_link}`);
+      toast("Invite created — share the link.");
       load();
     } catch (e) {
       setErr(String(e.message || e));
@@ -825,6 +1360,50 @@ function MembersPanel({ apiKey, currentUser }) {
 
   const copyLink = async () => {
     try { await navigator.clipboard.writeText(inviteLink); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+  };
+
+  const startEdit = (m) => {
+    setEditingId(m.id);
+    setEditForm({ name: m.name || "", email: m.email || "", role: m.role || "analyst" });
+    setErr("");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditForm({ name: "", email: "", role: "analyst" });
+  };
+
+  const saveEdit = async (m) => {
+    const body = {};
+    if (editForm.name.trim() && editForm.name.trim() !== m.name) body.name = editForm.name.trim();
+    if (editForm.email.trim() && editForm.email.trim() !== m.email) body.email = editForm.email.trim();
+    if (editForm.role && editForm.role !== m.role) body.role = editForm.role;
+    if (!Object.keys(body).length) { cancelEdit(); return; }
+    setBusy(true);
+    try {
+      await updateMember(apiKey, m.id, body);
+      toast("Member updated.");
+      cancelEdit();
+      load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRemove = async (m) => {
+    setBusy(true);
+    try {
+      await removeMember(apiKey, m.id);
+      toast(`Removed ${m.name || m.email}.`, "err");
+      setRemoveTarget(null);
+      load();
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -839,14 +1418,54 @@ function MembersPanel({ apiKey, currentUser }) {
       {err ? <p className="error">{err}</p> : null}
       <div className="doc-table">
         {members.map((m) => (
-          <div className="doc-row" key={m.id}>
-            <div className="doc-main">
-              <strong>{m.name || m.email}</strong>
-              <span className={`status-badge ${m.role === "owner" ? "" : "warn"}`}>{m.role}</span>
-              {m.email === currentUser?.email ? <span className="status-badge">You</span> : null}
+          editingId === m.id ? (
+            <div className="doc-row member-edit-row" key={m.id}>
+              <div className="member-edit-fields">
+                <input
+                  className="member-edit-input"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  placeholder="Name"
+                />
+                <input
+                  className="member-edit-input"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                  type="email"
+                  placeholder="Email"
+                />
+                <select
+                  className="select member-edit-select"
+                  value={editForm.role}
+                  onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                >
+                  <option value="analyst">Analyst (review only)</option>
+                  <option value="owner">Owner (full access)</option>
+                </select>
+              </div>
+              <div className="row-gap">
+                <button className="primary member-edit-btn" disabled={busy} onClick={() => saveEdit(m)}>
+                  {busy ? "Saving…" : "Save"}
+                </button>
+                <button className="ghost" disabled={busy} onClick={cancelEdit}>Cancel</button>
+              </div>
             </div>
-            <div className="doc-meta"><span>{m.email}</span></div>
-          </div>
+          ) : (
+            <div className="doc-row" key={m.id}>
+              <div className="doc-main">
+                <strong>{m.name || m.email}</strong>
+                <span className={`status-badge ${m.role === "owner" ? "" : "warn"}`}>{m.role === "owner" ? "Owner" : "Analyst"}</span>
+                {m.email === currentUser?.email ? <span className="status-badge">You</span> : null}
+              </div>
+              <div className="doc-meta"><span>{m.email}</span></div>
+              <div className="row-gap">
+                <button className="ghost" disabled={busy} onClick={() => startEdit(m)}>Edit</button>
+                {m.email !== currentUser?.email ? (
+                  <button className="ghost danger" disabled={busy} onClick={() => setRemoveTarget(m)}>Remove</button>
+                ) : null}
+              </div>
+            </div>
+          )
         ))}
       </div>
 
@@ -861,7 +1480,7 @@ function MembersPanel({ apiKey, currentUser }) {
           <span className="field-label">Email</span>
           <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} type="email" placeholder="teammate@company.com" />
         </label>
-        <label className="field">
+        <label className="field role-field">
           <span className="field-label">Role</span>
           <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
             <option value="analyst">Analyst (review only)</option>
@@ -875,6 +1494,243 @@ function MembersPanel({ apiKey, currentUser }) {
         <div className="invite-result">
           <input readOnly value={inviteLink} className="invite-input" />
           <button className="ghost" onClick={copyLink}>{copied ? "Copied ✓" : "Copy link"}</button>
+        </div>
+      ) : null}
+
+      {removeTarget ? (
+        <ConfirmModal
+          title="Remove member?"
+          body={`This removes "${removeTarget.name || removeTarget.email}" from the workspace. They keep their existing documents, but lose access to the console immediately.`}
+          confirmLabel="Remove member"
+          busy={busy}
+          onCancel={() => setRemoveTarget(null)}
+          onConfirm={() => onRemove(removeTarget)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+const SEARCH_HISTORY_KEY = "halohubx.search_history.v1";
+
+function loadSearchHistory() {
+  try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || "[]") || []; }
+  catch { return []; }
+}
+
+function saveSearchHistory(list) {
+  try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list)); } catch {}
+}
+
+function QuickSearch({ apiKey, onOpenDoc, onPickClient }) {
+  const [q, setQ] = useState("");
+  const [docs, setDocs] = useState([]);
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    if (!apiKey) return;
+    getDashboard(apiKey)
+      .then((d) => alive && setDocs(d))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [apiKey]);
+
+  useEffect(() => {
+    const h = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  const ql = q.trim().toLowerCase();
+  const matchedDocs = ql
+    ? docs.filter((d) =>
+        (d.filename || "").toLowerCase().includes(ql) ||
+        (d.client_name || "").toLowerCase().includes(ql) ||
+        (d.document_id || "").toLowerCase().includes(ql)
+      )
+    : [];
+  const seen = new Set();
+  const clients = ql
+    ? docs
+        .map((d) => d.client_name)
+        .filter((c) => c && c !== "—")
+        .filter((c) => !seen.has(c) && seen.add(c))
+        .filter((c) => c.toLowerCase().includes(ql))
+    : [];
+
+  const close = (fn) => { setOpen(false); fn && fn(); };
+
+  return (
+    <div className={`qsearch ${open && ql ? "open" : ""}`} ref={boxRef}>
+      <span className="qsearch-ico"><Icon name="search" size={16} /></span>
+      <input
+        className="qsearch-input"
+        placeholder="Search documents, clients…"
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            if (clients.length) close(() => onPickClient?.(clients[0]));
+            else if (matchedDocs.length) close(() => onOpenDoc?.(matchedDocs[0].document_id));
+            else setOpen(false);
+          } else if (e.key === "Escape") setOpen(false);
+        }}
+      />
+      {open && ql ? (
+        <div className="qsearch-drop">
+          {clients.length ? (
+            <div className="qsearch-group">
+              <span className="qsearch-label">Clients</span>
+              {clients.slice(0, 5).map((c) => (
+                <button key={c} className="qsearch-item" onClick={() => close(() => onPickClient?.(c))}>
+                  <span className="qsearch-item-t">Client</span>
+                  <span className="qsearch-item-v">{c}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {matchedDocs.length ? (
+            <div className="qsearch-group">
+              <span className="qsearch-label">Documents</span>
+              {matchedDocs.slice(0, 8).map((d) => (
+                <button key={d.document_id} className="qsearch-item" onClick={() => close(() => onOpenDoc?.(d.document_id))}>
+                  <span className="qsearch-item-t">Doc</span>
+                  <span className="qsearch-item-v">{d.filename}</span>
+                  <span className="qsearch-item-m">{d.client_name || "—"}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {!clients.length && !matchedDocs.length ? (
+            <div className="qsearch-empty">No matches for "{q.trim()}"</div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchPanel({ apiKey, onOpen }) {
+  const [query, setQuery] = useState("");
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [history, setHistory] = useState(loadSearchHistory);
+
+  const run = async (q = "") => {
+    const text = (q || query).trim();
+    if (!text || busy) return;
+    setErr(""); setResult(null); setBusy(true);
+    try {
+      const res = await searchDocuments(apiKey, text);
+      setResult(res);
+      setHistory((prev) => {
+        const next = [
+          { q: text, at: Date.now(), answer: res.answer || null },
+          ...prev.filter((h) => h.q !== text),
+        ].slice(0, 15);
+        saveSearchHistory(next);
+        return next;
+      });
+      if (!res.answer) toast("No answer found — try rephrasing.", "err");
+    } catch (e) {
+      setErr(String(e.message || e));
+      toast(String(e.message || e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearHistory = () => {
+    setHistory([]);
+    saveSearchHistory([]);
+  };
+
+  const fmtTime = (ts) => {
+    try { return new Date(ts).toLocaleString(); } catch { return ""; }
+  };
+
+  return (
+    <div className="panel search-panel">
+      <div className="recent-head">
+        <div>
+          <h2>Ask your documents</h2>
+          <p className="muted">Ask a question across every processed invoice / PO — get a precise, sourced answer from the extracted data.</p>
+        </div>
+      </div>
+
+      <div className="search-box">
+        <input
+          className="search-input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") run(); }}
+          placeholder='e.g. "Which vendor has the highest invoice total this month?"'
+          disabled={busy}
+        />
+        <button className="primary" disabled={busy || !query.trim()} onClick={run}>
+          {busy ? "Searching…" : "Search"}
+        </button>
+      </div>
+
+      {err ? <p className="error">{err}</p> : null}
+
+      {busy ? (
+        <div className="waiting">
+          <div className="spinner" />
+          <p className="muted">Reading your documents…</p>
+        </div>
+      ) : null}
+
+      {result ? (
+        <div className="answer-card">
+          <div className="answer-main">
+            <span className="answer-label">Answer</span>
+            <p className="answer-text">{result.answer}</p>
+          </div>
+          {result.sources?.length ? (
+            <div className="source-list">
+              <span className="answer-label">Sources ({result.sources.length}) · {result.scanned} documents scanned</span>
+              {result.sources.map((s) => (
+                <button key={s.document_id} className="source-chip" onClick={() => onOpen(s.document_id)}>
+                  <span className="source-name">{s.filename}</span>
+                  <span className="source-meta">{s.client_name || "—"}</span>
+                  <span className="source-open">Open →</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {history.length ? (
+        <div className="search-history">
+          <div className="history-head">
+            <span className="answer-label">Recent searches</span>
+            <button className="ghost small" onClick={clearHistory}>Clear</button>
+          </div>
+          <div className="history-list">
+            {history.map((h) => (
+              <button key={h.at} className="history-item" onClick={() => { setQuery(h.q); run(h.q); }}>
+                <span className="history-q">"{h.q}"</span>
+                <span className="history-meta">
+                  {h.answer ? <span className="history-has">answered</span> : <span className="history-has no">no answer</span>}
+                  <span className="history-time">{fmtTime(h.at)}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {!busy && !result && !err && !history.length ? (
+        <div className="empty-state">
+          <span className="empty-emoji">⌕</span>
+          <h3>Search across all your documents</h3>
+          <p className="muted">Try: "What was the total GST paid across all invoices?" or "Find invoices from vendor XYZ."</p>
         </div>
       ) : null}
     </div>
@@ -919,8 +1775,37 @@ function BillingPanel({ apiKey }) {
   };
 
   const buyTopup = () =>
-    run("topup", () => checkoutTopup(apiKey, topup),
-      `Checkout created for ${topup} credit(s). Complete payment to add them to your balance.`);
+    run("topup", async () => {
+      const chk = await checkoutTopup(apiKey, topup);
+      if (!window.Razorpay) {
+        const s = document.createElement("script");
+        s.src = "https://checkout.razorpay.com/v1/checkout.js";
+        s.async = true;
+        await new Promise((res, rej) => { s.onload = res; s.onerror = rej; document.head.appendChild(s); });
+      }
+      const rzp = new window.Razorpay({
+        key: chk.key_id,
+        amount: chk.amount_paise,
+        currency: chk.currency,
+        name: "HaloHubX",
+        description: `${chk.credits} credits top-up`,
+        order_id: chk.razorpay_order_id,
+        prefill: { name: "HaloHubX Partner" },
+        handler: async (resp) => {
+          await verifyPayment(apiKey, {
+            razorpay_order_id: resp.razorpay_order_id,
+            razorpay_payment_id: resp.razorpay_payment_id,
+            razorpay_signature: resp.razorpay_signature,
+          });
+          toast(`Payment successful! ${chk.credits} credit(s) added.`);
+          setMsg(`Payment successful! ${chk.credits} credit(s) added to your balance.`);
+          load();
+        },
+        modal: { ondismiss: () => setBusy("") },
+      });
+      rzp.open();
+      return null;
+    }, "");
   const subscribe = (plan) =>
     run("plan", () => subscribePlan(apiKey, plan), `Subscribed to the ${plan} plan.`);
   const simulate = (which) =>
@@ -1034,6 +1919,7 @@ export default function App() {
   const partnerName = session.partnerName || "";
   const [connected, setConnected] = useState(false);
   const [tab, setTab] = useState("dashboard");
+  const [docsClient, setDocsClient] = useState(null);
   const [docId, setDocId] = useState(null);
   const [serverOk, setServerOk] = useState(null);
   const [usage, setUsage] = useState(null);
@@ -1061,6 +1947,9 @@ export default function App() {
         if (err instanceof AuthError) {
           setSession((s) => ({ ...s, token: "", user: null }));
           try { localStorage.removeItem(SESSION_KEY); } catch {}
+        } else {
+          // Backend hiccup — still enter the app; panels show their own errors.
+          setConnected(true);
         }
       });
   }, [token]);
@@ -1111,18 +2000,28 @@ export default function App() {
         <main>
           <InviteAccept token={inviteToken} onAuthenticated={authenticate} />
         </main>
+        <ToastHost />
       </div>
     );
   }
 
   const body = !connected ? (
-    <AuthPanel onAuthenticated={authenticate} serverOk={serverOk} />
+    token ? (
+      <div className="panel splash-panel">
+        <div className="spinner" />
+        <p className="muted">Restoring session…</p>
+      </div>
+    ) : (
+      <AuthPanel onAuthenticated={authenticate} serverOk={serverOk} />
+    )
   ) : docId ? (
     <ReviewPanel docId={docId} apiKey={token} onReset={() => setDocId(null)} />
   ) : tab === "dashboard" ? (
-    <DashboardPanel apiKey={token} onOpenDoc={(id) => setDocId(id)} onGotoUpload={() => setTab("upload")} />
+    <DashboardPanel apiKey={token} onOpenDoc={(id) => setDocId(id)} onGotoUpload={() => setTab("upload")} onGotoDocs={() => { setTab("docs"); setDocId(null); setDocsClient(null); }} />
   ) : tab === "docs" ? (
-    <DocumentsList apiKey={token} onOpen={(id) => setDocId(id)} />
+    <DocumentsList key={docsClient || "all"} apiKey={token} role={user?.role || "owner"} initialClient={docsClient} onOpen={(id) => setDocId(id)} />
+  ) : tab === "search" ? (
+    <SearchPanel apiKey={token} onOpen={(id) => setDocId(id)} />
   ) : tab === "usage" ? (
     <UsagePanel apiKey={token} />
   ) : tab === "billing" && user?.role !== "analyst" ? (
@@ -1131,14 +2030,17 @@ export default function App() {
     <AuditPanel apiKey={token} />
   ) : tab === "members" && user?.role !== "analyst" ? (
     <MembersPanel apiKey={token} currentUser={user} />
+  ) : tab === "settings" ? (
+    <SettingsPanel user={user} partnerName={partnerName} onSignOut={signOut} />
   ) : (
-    <div className="panel"><UploadPanel apiKey={token} onUploaded={(id) => setDocId(id)} /></div>
+    <div className="panel"><UploadPanel apiKey={token} onUploaded={(id) => setDocId(id)} onGotoDocs={() => { setTab("docs"); setDocId(null); setDocsClient(null); }} /></div>
   );
 
   if (!connected) {
     return (
       <div className="app">
         <main>{body}</main>
+        <ToastHost />
       </div>
     );
   }
@@ -1146,46 +2048,61 @@ export default function App() {
   return (
     <div className="app desktop">
       <aside className="sidebar">
-        <div className="brand brand-block">
-          <span className="logo-mark">H</span>
-          <span className="brand-name">HaloHubX</span>
+        <div className="brand brand-block" title={user?.email || ""}>
+          <span className="nav-avatar">{user?.name?.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("") || "U"}</span>
+          <span className="brand-name">{user?.name || "Console user"}</span>
         </div>
         <nav className="side-nav">
           {NAV.filter((n) => (user?.role === "analyst" ? !n.ownerOnly : true)).map((n) => (
             <button
               key={n.id}
               className={`side-item ${tab === n.id ? "active" : ""}`}
-              onClick={() => { setTab(n.id); setDocId(null); }}
+              title={n.label}
+              onClick={() => { setTab(n.id); setDocId(null); setDocsClient(null); }}
             >
-              <span className="side-icon">{n.icon}</span>
-              {n.label}
+              <span className="side-icon"><Icon name={n.icon} /></span>
+              <span className="side-label">{n.label}</span>
             </button>
           ))}
         </nav>
         <div className="side-foot">
-          <button className="ghost full" onClick={disconnect}>Sign out</button>
+          <button className="side-item" title="Settings" onClick={() => { setTab("settings"); setDocId(null); }}>
+            <span className="side-icon"><Icon name="settings" /></span>
+            <span className="side-label">Settings</span>
+          </button>
+          <button className="side-item" title="Sign out" onClick={signOut}>
+            <span className="side-icon"><Icon name="logout" /></span>
+            <span className="side-label">Sign out</span>
+          </button>
         </div>
       </aside>
       <div className="content">
         <header className="topbar">
           <div className="page-title">
             {NAV.find((n) => n.id === tab)?.label ||
+              (tab === "settings" ? "Profile & Settings" : "") ||
               (docId ? "Review document" : "")}
           </div>
+          <QuickSearch
+            apiKey={token}
+            onOpenDoc={(id) => setDocId(id)}
+            onPickClient={(c) => { setDocsClient(c); setTab("docs"); setDocId(null); }}
+          />
           <div className="topbar-right">
             <CreditMeter usage={usage} compact />
-            <span className="user-badge" title={user?.email || ""}>
-              {user?.name || "Console user"}
-              <em className="role-tag">{user?.role === "analyst" ? "analyst" : "owner"}</em>
-            </span>
-            <button className="logout-btn" onClick={signOut} title="Sign out">
-              Sign out
+            <button className="profile-btn" onClick={() => { setTab("settings"); setDocId(null); }} title="Profile & settings">
+              <span className="avatar">{(["", user?.name].includes(user?.name) ? "?" : user.name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("")) || "U"}</span>
+              <span className="profile-info">
+                <span className="profile-name">{user?.name || "Console user"}</span>
+                <em className="role-tag">{user?.role === "analyst" ? "analyst" : "owner"}</em>
+              </span>
             </button>
           </div>
         </header>
         <main>{body}</main>
         <footer className="footer muted">HaloHubX Document Engine · Partner console</footer>
       </div>
+      <ToastHost />
     </div>
   );
 }

@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const url = require("url");
 
-const API_BASE = process.env.HALOHUBX_API || "http://127.0.0.1:8000";
+const API_BASE = resolveApiBase();
 const API_PREFIXES = [
   "/upload",
   "/auth",
@@ -15,7 +15,30 @@ const API_PREFIXES = [
   "/documents",
   "/status",
   "/retrieve",
+  "/search",
 ];
+
+// Where the Electron shell should forward API calls. Priority:
+//   1. HALOHUBX_API env var (dev override)
+//   2. api-config.json sitting next to this executable (so a packaged app can
+//      be repointed to a hosted backend without a rebuild)
+//   3. localhost backend (local dev fallback)
+function resolveApiBase() {
+  if (process.env.HALOHUBX_API) return process.env.HALOHUBX_API;
+  try {
+    const candidates = [
+      path.join(path.dirname(process.execPath), "api-config.json"),
+      path.join(__dirname, "api-config.json"),
+    ];
+    for (const c of candidates) {
+      if (fs.existsSync(c)) {
+        const cfg = JSON.parse(fs.readFileSync(c, "utf8"));
+        if (cfg && typeof cfg.apiBase === "string" && cfg.apiBase.startsWith("http")) return cfg.apiBase;
+      }
+    }
+  } catch {}
+  return "http://127.0.0.1:8000";
+}
 
 let mainWindow;
 let server;
@@ -130,6 +153,8 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     title: "HaloHubX Document Intelligence",
+    backgroundColor: "#f1f5f9",
+    show: false,
     icon: path.join(__dirname, "..", "frontend", "dist", "favicon.ico"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -140,6 +165,10 @@ function createWindow() {
   });
   mainWindow.loadURL(`http://127.0.0.1:${SERVER_PORT}`);
   mainWindow.setMenu(null);
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    mainWindow.focus();
+  });
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -147,7 +176,9 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createServer();
-  createWindow();
+  // Ensure the local server is bound before loading the renderer so the
+  // first HTTP request inside the window doesn't get ECONNREFUSED.
+  server.on("listening", () => createWindow());
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

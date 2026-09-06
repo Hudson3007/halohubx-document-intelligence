@@ -34,7 +34,7 @@ def list_documents(
     """Recent documents for this partner, newest first (for the staging UI)."""
     docs = (
         db.query(Document)
-        .filter(Document.partner_id == actor.partner_id)
+        .filter(Document.partner_id == actor.partner_id, Document.deleted_at.is_(None))
         .order_by(Document.created_at.desc())
         .limit(50)
         .all()
@@ -63,7 +63,11 @@ def get_document(
     """Full result for the side-by-side review view (raw result + client)."""
     doc = (
         db.query(Document)
-        .filter(Document.id == document_id, Document.partner_id == actor.partner_id)
+        .filter(
+            Document.id == document_id,
+            Document.partner_id == actor.partner_id,
+            Document.deleted_at.is_(None),
+        )
         .first()
     )
     if doc is None:
@@ -93,7 +97,11 @@ def confirm_document(
     deliver the webhook (if a URL is configured)."""
     doc = (
         db.query(Document)
-        .filter(Document.id == document_id, Document.partner_id == actor.partner_id)
+        .filter(
+            Document.id == document_id,
+            Document.partner_id == actor.partner_id,
+            Document.deleted_at.is_(None),
+        )
         .first()
     )
     if doc is None:

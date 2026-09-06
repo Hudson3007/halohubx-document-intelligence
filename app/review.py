@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth import get_actor, Actor
+from app.auth import get_actor, Actor, require_role
 from app.config import LOW_CONFIDENCE_THRESHOLD, UPLOAD_DIR
 from app.db import get_db
 from app.models import Client, Document
@@ -102,6 +102,14 @@ def _get_partner_doc(db: Session, partner_id: str, document_id: str) -> Document
     return doc
 
 
+def _get_active_doc(db: Session, partner_id: str, document_id: str) -> Document:
+    """Version of _get_partner_doc that refuses soft-deleted documents."""
+    doc = _get_partner_doc(db, partner_id, document_id)
+    if doc.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
 @router.get("")
 def list_documents(
     review_status: str = "needs_review",
@@ -114,15 +122,34 @@ def list_documents(
     get every document, newest first."""
     docs = (
         db.query(Document)
-        .filter(Document.partner_id == actor.partner_id)
+        .filter(Document.partner_id == actor.partner_id, Document.deleted_at.is_(None))
         .order_by(Document.created_at.desc())
         .limit(200)
         .all()
     )
+
+    # Documents a human already reviewed/approved are no longer flagged,
+    # even if the stored confidence values still sit below the threshold.
+    reviewed_ids = set()
+    try:
+        from app.models import AuditLogEntry
+        reviewed = (
+            db.query(AuditLogEntry.document_id)
+            .filter(
+                AuditLogEntry.partner_id == actor.partner_id,
+                AuditLogEntry.document_id.isnot(None),
+                AuditLogEntry.action.in_(["approval", "review_edit"]),
+            )
+            .all()
+        )
+        reviewed_ids = {r[0] for r in reviewed}
+    except Exception:
+        reviewed_ids = set()
+
     items = []
     for d in docs:
         result = d.result_json if d.result_json and isinstance(d.result_json, dict) else {}
-        needs = has_low_confidence(result, LOW_CONFIDENCE_THRESHOLD)
+        needs = has_low_confidence(result, LOW_CONFIDENCE_THRESHOLD) and d.id not in reviewed_ids
         if review_status == "all" or (review_status == "needs_review" and needs):
             items.append(
                 {
@@ -145,7 +172,7 @@ def get_document_review(
 ):
     """Full detail for the review screen: the normalised result, the source
     PDF flag, and the confidence threshold the review UI should highlight at."""
-    doc = _get_partner_doc(db, actor.partner_id, document_id)
+    doc = _get_active_doc(db, actor.partner_id, document_id)
     result = doc.result_json if isinstance(doc.result_json, dict) else {}
     return {
         "document_id": doc.id,
@@ -166,7 +193,7 @@ def get_document_file(
     db: Session = Depends(get_db),
 ):
     """Return the original uploaded PDF for side-by-side review preview."""
-    _get_partner_doc(db, actor.partner_id, document_id)
+    _get_active_doc(db, actor.partner_id, document_id)
     path = pdf_path(document_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="No original file stored for this document")
@@ -190,7 +217,7 @@ def approve_document(
 ):
     """A human corrected the extraction. Save it, mark completed, and deliver
     the webhook (if a URL is configured). Returns the delivery outcome."""
-    doc = _get_partner_doc(db, actor.partner_id, document_id)
+    doc = _get_active_doc(db, actor.partner_id, document_id)
 
     doc.result_json = payload.result
     doc.status = "completed"
@@ -225,3 +252,111 @@ def approve_document(
         "client_name": _client_name(db, actor.partner_id, doc.client_id),
         "webhook_delivered": delivered,
     }
+
+
+@router.get("/bin")
+def bin_documents(
+    actor: Actor = Depends(get_actor),
+    db: Session = Depends(get_db),
+):
+    """Owner-only 'bin': documents that were soft-deleted but not yet purged.
+    An analyst's delete lands here awaiting owner approval; an owner's
+    delete sits here inside the 5-second undo window before permanent purge."""
+    if not actor.is_owner:
+        raise HTTPException(status_code=403, detail="Only owners can view the bin.")
+    docs = (
+        db.query(Document)
+        .filter(Document.partner_id == actor.partner_id, Document.deleted_at.isnot(None))
+        .order_by(Document.deleted_at.desc())
+        .limit(200)
+        .all()
+    )
+    return {
+        "documents": [
+            {
+                "document_id": d.id,
+                "filename": d.filename,
+                "status": d.status,
+                "requested_by": d.delete_requested_by,
+                "deleted_at": d.deleted_at.isoformat() if d.deleted_at else None,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            for d in docs
+        ]
+    }
+
+
+@router.post("/{document_id}/delete")
+def delete_document(
+    document_id: str,
+    actor: Actor = Depends(get_actor),
+    db: Session = Depends(get_db),
+):
+    """Soft-delete a document: hides it from every list immediately. Also
+    works as the analyst -> owner approval flow — when an analyst deletes, the
+    doc appears in the owner's bin and is only purged after the owner approves.
+    The owner's own undo window is enforced client-side, then approve-delete."""
+    doc = _get_partner_doc(db, actor.partner_id, document_id)
+    if doc.deleted_at is not None:
+        return {"document_id": doc.id, "status": "already_deleted"}
+    doc.deleted_at = datetime.utcnow()
+    doc.delete_requested_by = actor.email or actor.role
+
+    from app.audit import record_from_actor
+    verb = "requested a delete" if actor.role == "analyst" else "deleted"
+    record_from_actor(
+        db, actor=actor, action="delete", document_id=doc.id,
+        summary=f"{verb} {doc.filename}",
+    )
+    db.commit()
+    return {"document_id": doc.id, "status": "deleted"}
+
+
+@router.post("/{document_id}/restore")
+def restore_document(
+    document_id: str,
+    actor: Actor = Depends(get_actor),
+    db: Session = Depends(get_db),
+):
+    """Undo a soft delete (owner undo window, or bin restore)."""
+    doc = _get_partner_doc(db, actor.partner_id, document_id)
+    if doc.deleted_at is None:
+        return {"document_id": doc.id, "status": "not_deleted"}
+    doc.deleted_at = None
+    doc.delete_requested_by = None
+
+    from app.audit import record_from_actor
+    record_from_actor(
+        db, actor=actor, action="restore", document_id=doc.id,
+        summary=f"Restored {doc.filename}",
+    )
+    db.commit()
+    return {"document_id": doc.id, "status": "restored"}
+
+
+@router.post("/{document_id}/approve-delete")
+def approve_delete(
+    document_id: str,
+    actor: Actor = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+):
+    """Owner confirms a (soft-deleted) document's removal — hard delete: drop
+    the row and the stored original PDF. Irreversible."""
+    doc = _get_partner_doc(db, actor.partner_id, document_id)
+
+    from app.audit import record_from_actor
+    record_from_actor(
+        db, actor=actor, action="approve_delete", document_id=doc.id,
+        summary=f"Permanently deleted {doc.filename}",
+    )
+    db.commit()
+
+    pdf = pdf_path(document_id)
+    try:
+        if pdf.exists():
+            pdf.unlink()
+    except Exception:
+        pass
+    db.delete(doc)
+    db.commit()
+    return {"document_id": document_id, "status": "purged"}

@@ -1,0 +1,55 @@
+# Render Blueprint — hosts the HaloHubX backend so the desktop app can talk
+# to a public API instead of a local backend on the friend's machine.
+#
+# Deploy:
+#   1. Push this repo to GitHub.
+#   2. In Render: New+ → Blueprint, connect the repo, pick this render.yaml.
+#   3. Fill the env vars below (Render prompts for sync:false values).
+#   4. Render gives a URL like https://halohubx-api.onrender.com — put that in
+#      the desktop's api-config.json (see desktop/api-config.json.example).
+#
+# The start command runs migrations first, then serves the API. `$PORT` is
+# Render's assigned port; binding must not use the hardcoded 8000.
+
+services:
+  - type: web
+    name: halohubx-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash -c "python -m app.init_db && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /healthz
+    autoDeploy: true
+
+    envVars:
+      # --- Required. Set these in the Render dashboard (never in git). ---
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+      # --- Recommended (safe defaults below) ---
+      # The API refuses to connect as a DB superuser. Supabase's stock
+      # `postgres` URL is superuser — set ALLOW_SUPERUSER_DB=1 only until you
+      # provision a least-privilege role in Supabase.
+      - key: ALLOW_SUPERUSER_DB
+        value: "1"
+      # No local backend on the server; force remote Postgres over TLS.
+      - key: DB_SSL_DISABLE
+        value: "false"
+      - key: ENABLE_DEV_PAYMENTS
+        value: "false"
+      - key: LOG_JSON
+        value: "1"
+      - key: LOG_LEVEL
+        value: "INFO"
+      # Uploads must be discarded-friendly on an ephemeral disk; 25 MB cap.
+      - key: MAX_UPLOAD_BYTES
+        value: "26214400"

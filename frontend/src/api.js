@@ -51,6 +51,46 @@ export async function uploadDocument(file, { apiKey, clientName, webhookUrl }) {
   return authedFetch("/upload", apiKey, { method: "POST", body: form });
 }
 
+export async function uploadBatch(files, { apiKey, clientName, webhookUrl }) {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  form.append("client_name", clientName);
+  if (webhookUrl) form.append("webhook_url", webhookUrl);
+  return authedFetch("/upload/batch", apiKey, { method: "POST", body: form });
+}
+
+export async function batchStatus(documentIds, apiKey) {
+  return authedFetch("/status/batch", apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_ids: documentIds }),
+  });
+}
+
+export async function retryFailed(apiKey, allFailed = false) {
+  return authedFetch("/retry", apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(allFailed ? { all_failed: true } : {}),
+  });
+}
+
+export async function deleteDocument(documentId, apiKey) {
+  return authedFetch(`/documents/${documentId}/delete`, apiKey, { method: "POST" });
+}
+
+export async function restoreDocument(documentId, apiKey) {
+  return authedFetch(`/documents/${documentId}/restore`, apiKey, { method: "POST" });
+}
+
+export async function approveDelete(documentId, apiKey) {
+  return authedFetch(`/documents/${documentId}/approve-delete`, apiKey, { method: "POST" });
+}
+
+export async function getBin(apiKey) {
+  return authedFetch(`/documents/bin`, apiKey);
+}
+
 export async function getStatus(documentId, apiKey) {
   return authedFetch(`/status/${documentId}`, apiKey);
 }
@@ -104,35 +144,47 @@ export async function listAllDocuments(apiKey) {
   return authedFetch(`/documents?review_status=all`, apiKey);
 }
 
+// Short-lived in-memory cache so panels mounted together (dashboard + global
+// search) share one network round-trip instead of three.
+const _dashCache = new Map(); // apiKey -> { expires, promise }
+const DASH_TTL = 5000;
+
 // Dashboard view = merge the two lists into a single per-document array with
 // status, needs_review, invoice_count, client_name, filename, created_at.
 export async function getDashboard(apiKey) {
-  const [hitl, all] = await Promise.all([
-    authedFetch(`/hitl/documents`, apiKey),
-    listAllDocuments(apiKey),
-  ]);
-  // /hitl/documents -> { documents: [...] } (id + client_name)
-  // /documents?review_status=all -> bare array (document_id + status + needs_review)
-  const base = (hitl.documents || []).map((d) => ({
-    document_id: d.id || d.document_id,
-    filename: d.filename,
-    client_name: d.client_name || "—",
-    status: d.status,
-    created_at: d.created_at,
-  }));
-  const byId = new Map(base.map((d) => [d.document_id, d]));
-  const list = Array.isArray(all) ? all : all.documents || [];
-  for (const d of list) {
-    const existing = byId.get(d.document_id) || {
-      document_id: d.document_id, filename: d.filename, client_name: "—",
-    };
-    existing.status = d.status;
-    existing.needs_review = Boolean(d.needs_review);
-    existing.invoice_count = d.invoice_count ?? 0;
-    existing.created_at = existing.created_at || d.created_at;
-    byId.set(d.document_id, existing);
-  }
-  return Array.from(byId.values());
+  const now = Date.now();
+  const hit = _dashCache.get(apiKey);
+  if (hit && hit.expires > now) return hit.promise;
+  const promise = (async () => {
+    const [hitl, all] = await Promise.all([
+      authedFetch(`/hitl/documents`, apiKey),
+      listAllDocuments(apiKey),
+    ]);
+    // /hitl/documents -> { documents: [...] } (id + client_name)
+    // /documents?review_status=all -> bare array (document_id + status + needs_review)
+    const base = (hitl.documents || []).map((d) => ({
+      document_id: d.id || d.document_id,
+      filename: d.filename,
+      client_name: d.client_name || "—",
+      status: d.status,
+      created_at: d.created_at,
+    }));
+    const byId = new Map(base.map((d) => [d.document_id, d]));
+    const list = Array.isArray(all) ? all : all.documents || [];
+    for (const d of list) {
+      const existing = byId.get(d.document_id) || {
+        document_id: d.document_id, filename: d.filename, client_name: "—",
+      };
+      existing.status = d.status;
+      existing.needs_review = Boolean(d.needs_review);
+      existing.invoice_count = d.invoice_count ?? 0;
+      existing.created_at = existing.created_at || d.created_at;
+      byId.set(d.document_id, existing);
+    }
+    return Array.from(byId.values());
+  })();
+  _dashCache.set(apiKey, { expires: now + DASH_TTL, promise });
+  return promise;
 }
 
 export async function getUsage(apiKey) {
@@ -175,6 +227,23 @@ export async function devSimulateBilling(apiKey, { credits, plan } = {}) {
   });
 }
 
+export async function verifyPayment(apiKey, payload) {
+  return authedFetch(`/billing/payments/verify`, apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+// AI document search — ask a question across the partner's completed documents.
+export async function searchDocuments(apiKey, query) {
+  return authedFetch(`/search`, apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+}
+
 
 // Download the original PDF for side-by-side review (returns a blob URL).
 export async function documentFileUrl(documentId, apiKey) {
@@ -204,6 +273,18 @@ export async function createMember(apiKey, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export async function updateMember(apiKey, userId, body) {
+  return authedFetch(`/auth/partner/members/${userId}`, apiKey, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function removeMember(apiKey, userId) {
+  return authedFetch(`/auth/partner/members/${userId}`, apiKey, { method: "DELETE" });
 }
 
 export async function inviteInfo(token) {

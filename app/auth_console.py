@@ -312,6 +312,87 @@ def create_member(
     return {"member": _public_user(user), "invite_link": invite_link}
 
 
+class MemberUpdateRequest(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    role: str | None = None
+
+
+@router.patch("/partner/members/{user_id}")
+def update_member(
+    user_id: str,
+    req: MemberUpdateRequest,
+    actor: Actor = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+):
+    """Owner edits a teammate's name, email, or role."""
+    _partner_for_actor(db, actor)
+    user = db.query(User).filter(
+        User.id == user_id, User.partner_id == actor.partner_id
+    ).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="Member not found.")
+
+    if req.email:
+        _validate_email(req.email)
+        new_email = req.email.lower()
+        if new_email != user.email:
+            clash = db.query(User).filter(User.email == new_email).first()
+            if clash is not None:
+                raise HTTPException(status_code=409, detail="A user with this email already exists.")
+            user.email = new_email
+
+    if req.name is not None:
+        user.name = req.name.strip() or user.name
+
+    if req.role is not None:
+        if req.role not in ("owner", "analyst"):
+            raise HTTPException(status_code=400, detail="role must be 'owner' or 'analyst'.")
+        if str(user.id) == str(actor.user_id):
+            raise HTTPException(status_code=400, detail="You cannot change your own role.")
+        user.role = req.role
+
+    db.commit()
+    db.refresh(user)
+
+    from app.audit import record_from_actor
+    record_from_actor(
+        db, actor=actor, action="member_updated",
+        summary=f"Updated member {user.email}",
+    )
+    db.commit()
+    return {"member": _public_user(user)}
+
+
+@router.delete("/partner/members/{user_id}")
+def remove_member(
+    user_id: str,
+    actor: Actor = Depends(require_role("owner")),
+    db: Session = Depends(get_db),
+):
+    """Owner removes a teammate from the workspace."""
+    _partner_for_actor(db, actor)
+    user = db.query(User).filter(
+        User.id == user_id, User.partner_id == actor.partner_id
+    ).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="Member not found.")
+    if str(user.id) == str(actor.user_id):
+        raise HTTPException(status_code=400, detail="You cannot remove your own account.")
+
+    removed_email = user.email
+    db.delete(user)
+    db.commit()
+
+    from app.audit import record_from_actor
+    record_from_actor(
+        db, actor=actor, action="member_removed",
+        summary=f"Removed member {removed_email}",
+    )
+    db.commit()
+    return {"ok": True, "removed": removed_email}
+
+
 class InviteAcceptRequest(BaseModel):
     name: str | None = None
     password: str = Field(min_length=8)
