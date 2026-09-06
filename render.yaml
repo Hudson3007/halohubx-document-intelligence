@@ -44,8 +44,11 @@ services:
       # No local backend on the server; force remote Postgres over TLS.
       - key: DB_SSL_DISABLE
         value: "false"
+      # Demo mode while Razorpay is unset: exposes the dev-simulate billing
+      # endpoint (free +demo credits, change plan). FLIP TO "false" the moment
+      # real RAZORPAY_* keys are added — never run simulate in production.
       - key: ENABLE_DEV_PAYMENTS
-        value: "false"
+        value: "true"
       - key: LOG_JSON
         value: "1"
       - key: LOG_LEVEL
