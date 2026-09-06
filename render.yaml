@@ -23,6 +23,11 @@ services:
     autoDeploy: true
 
     envVars:
+      # Pin Python so pymupdf uses a prebuilt wheel. The default (3.14) has no
+      # wheel for pymupdf==1.24.10, forcing an MuPDF source compile that fails
+      # on Render's builders.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
       # --- Required. Set these in the Render dashboard (never in git). ---
       - key: DATABASE_URL
         sync: false
