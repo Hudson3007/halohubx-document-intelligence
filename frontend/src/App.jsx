@@ -1049,7 +1049,7 @@ function AuthPanel({ onAuthenticated, initialKey, serverOk }) {
   const submit = async () => {
     setErr("");
     if (!email.trim() || !password) {
-      setErr("Enter your email and password.");
+      setErr("Enter your login and password.");
       return;
     }
     if (mode === "signup" && password.length < 8) {
@@ -1101,10 +1101,10 @@ function AuthPanel({ onAuthenticated, initialKey, serverOk }) {
         <label className="field">
           <span className="field-label">Email</span>
           <input
-            type="email"
+            type="text"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@company.com"
+            placeholder="admin or you@company.com"
             autoComplete="email"
           />
         </label>

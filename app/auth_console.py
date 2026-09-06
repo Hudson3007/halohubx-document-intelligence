@@ -124,7 +124,14 @@ def login(
     db: Session = Depends(get_db),
 ):
     _rate_limited(request)
-    user = db.query(User).filter(User.email == req.email.lower()).first()
+    # Convenience alias for the demo/owner console: a bare username without a
+    # domain is resolved against the primary test account. Keeps QA UX as
+    # simple as possible while real users still log in with an email.
+    lookup_email = req.email.lower()
+    if "@" not in lookup_email:
+        alias = db.query(User).filter(User.email == lookup_email + "@halohubx.local").first()
+        lookup_email = alias.email if alias else lookup_email
+    user = db.query(User).filter(User.email == lookup_email).first()
 
     # Uniform error for unknown user vs wrong password (don't leak account
     # existence), but only run the PBKDF2 check when there's a real user so we
