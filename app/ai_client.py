@@ -35,9 +35,15 @@ def _is_rate_limited(exc: Exception) -> bool:
 
 def _is_daily_quota(exc: Exception) -> bool:
     """True if the 429 is a per-DAY free-tier cap (which no amount of
-    waiting/retrying will fix — the quota resets at midnight)."""
+    waiting/retrying will fix — the quota resets at midnight UTC).
+
+    Discriminate on the quota_id: daily limits are
+    'GenerateRequestsPerDayPerProjectPerModel', per-minute ones are
+    '...PerMinutePerProject...'. The shared metric name
+    'generate_content_free_tier_requests' appears in BOTH, so it must not be
+    used alone."""
     msg = str(exc)
-    return "PerDayPerProject" in msg or "free_tier_requests" in msg
+    return "PerDay" in msg or "per day" in msg.lower()
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -61,14 +67,13 @@ def _retry_call(fn, *, attempts: int = 6, base_delay: float = 2.0):
             return fn()
         except Exception as exc:  # noqa: BLE001 - we re-raise at the end
             last_exc = exc
-            delay = _extract_retry_delay(exc)
             if attempt >= attempts - 1 or not _is_rate_limited(exc):
                 raise
-            # Only bail on the daily cap if the provider gave NO wait time.
-            # Gem: the per-minute throttles share the daily-quota metric text
-            # but include a real 'retry in Ns' — we must wait, not fail-fast.
-            if _is_daily_quota(exc) and delay is None:
+            # Fail fast on the true daily cap — a per-minute throttle is the
+            # only case worth waiting out, and the provider reports its delay.
+            if _is_daily_quota(exc):
                 raise
+            delay = _extract_retry_delay(exc)
             if delay is None:
                 delay = base_delay * (2 ** attempt) + (time.monotonic() % 1)
             time.sleep(delay)
