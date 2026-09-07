@@ -39,7 +39,16 @@ async function authedFetch(path, apiKey, options = {}) {
     }
     throw new AuthError(`${res.status}: ${detail}`);
   }
-  if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const body = await res.json();
+      detail = JSON.stringify(body.detail || body);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${res.status}: ${detail}`);
+  }
   return res.json();
 }
 
@@ -73,6 +82,18 @@ export async function retryFailed(apiKey, allFailed = false) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(allFailed ? { all_failed: true } : {}),
   });
+}
+
+export async function retryDocument(documentId, apiKey) {
+  return authedFetch("/retry", apiKey, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_ids: [documentId] }),
+  });
+}
+
+export async function getAiUsage(apiKey) {
+  return authedFetch("/usage/ai", apiKey);
 }
 
 export async function deleteDocument(documentId, apiKey) {
@@ -250,7 +271,12 @@ export async function documentFileUrl(documentId, apiKey) {
   const res = await fetch(`/documents/${documentId}/file`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
-  if (!res.ok) throw new Error(`${res.status}: could not load PDF`);
+  if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error("Original file no longer available (it was on the server's temporary disk and lost on restart). Try re-uploading the document.");
+    }
+    throw new Error(`could not load PDF (${res.status})`);
+  }
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }

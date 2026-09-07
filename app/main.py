@@ -174,6 +174,13 @@ async def upload_document(
 
     client_row = _get_or_create_client(db, partner, client_name)
 
+    # --- Daily AI quota guard: fail fast BEFORE charging credits ---
+    # Free-tier Gemini caps at ~20 requests/day. Refusing the upload here (429)
+    # beats charging pages and then failing extraction minutes later.
+    from app.quota import check_quota
+    provider = get_default_client().provider
+    check_quota(db, provider, needed=1)
+
     doc = Document(
         partner_id=partner.id,
         client_id=client_row.id,
@@ -192,6 +199,8 @@ async def upload_document(
     ai_client = None
     try:
         ai_client = get_default_client()
+        from app.quota import record_request
+        record_request(db, ai_client.provider, 1)
         result = extract_document(ai_client, file_bytes, "application/pdf")
         doc.result_json = result
         doc.status = "completed"

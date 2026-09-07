@@ -73,3 +73,7 @@ services:
       # Uploads must be discarded-friendly on an ephemeral disk; 25 MB cap.
       - key: MAX_UPLOAD_BYTES
         value: "26214400"
+      # Daily AI request budget (free-tier Gemini is capped ~20/day). Bump when
+      # the provider key is upgraded to a paid/higher tier.
+      - key: GEMINI_DAILY_LIMIT
+        value: "20"

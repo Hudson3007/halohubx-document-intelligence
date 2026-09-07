@@ -106,6 +106,8 @@ def _extract_in_background(document_id: str) -> None:
 
         ai_client = get_default_client()
         try:
+            from app.quota import record_request
+            record_request(db, ai_client.provider, 1)
             result = extract_document(ai_client, file_bytes, "application/pdf")
             doc.result_json = result
             doc.status = "completed"
@@ -212,6 +214,12 @@ async def upload_batch(
                 "usage": budget.to_dict(),
             },
         )
+
+    # 2b -- Daily AI request quota: fail fast BEFORE charging credits or
+    #      spawning background work (free-tier Gemini caps at ~20 req/day).
+    from app.quota import check_quota
+    provider = get_default_client().provider
+    check_quota(db, provider, needed=len(accepted))
 
     # 3 -- One client (created once per batch) + a Document row per file.
     client_row = (
@@ -327,6 +335,11 @@ def retry_failed(
 
     if not rows:
         return {"queued": 0, "documents": []}
+
+    # Don't re-queue work the daily AI budget can't afford right now.
+    from app.quota import check_quota
+    provider = get_default_client().provider
+    check_quota(db, provider, needed=len(rows))
 
     # Reset to processing so the queue stays consistent and credits already
     # charged are NOT charged again (pages were consumed at original submit).

@@ -20,7 +20,8 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, String, Text, Float, Boolean, Integer, DateTime, ForeignKey, JSON
+    Column, String, Text, Float, Boolean, Integer, DateTime, ForeignKey, JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -160,6 +161,27 @@ class AuditLogEntry(Base):
     action = Column(String, nullable=False, index=True)  # upload | review_edit | approval | login
     summary = Column(Text, nullable=True)         # e.g. "Corrected 2 fields (qty, unit_price)"
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
+class AiDailyUsage(Base):
+    """Daily AI-request meter.
+
+    Free-tier Gemini is capped around 20 requests/day; each document
+    extraction consumes one. We keep a running per-provider count for the
+    current UTC day so the API can fail fast on uploads (instead of charging
+    credits and then failing extraction) and so the console can show how much
+    of the daily budget is left. Not partner-scoped: the API key is shared
+    server-side, so one row per (provider, day) is correct.
+    """
+
+    __tablename__ = "ai_daily_usage"
+    __table_args__ = (UniqueConstraint("provider", "day", name="uq_ai_daily_usage_provider_day"),)
+
+    id = Column(String, primary_key=True, default=_uuid)
+    provider = Column(String, nullable=False, index=True)  # "gemini" | "claude"
+    day = Column(String, nullable=False, index=True)       # UTC date "YYYY-MM-DD"
+    requests = Column(Integer, nullable=False, default=0)  # requests used this day
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class CreditOrder(Base):

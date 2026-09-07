@@ -26,6 +26,8 @@ import {
   uploadBatch,
   batchStatus,
   retryFailed,
+  retryDocument,
+  getAiUsage,
   uploadDocument,
   deleteDocument,
   restoreDocument,
@@ -222,6 +224,7 @@ function ReviewPanel({ docId, apiKey, onReset }) {
   const [pdfError, setPdfError] = useState("");
   const [removeTarget, setRemoveTarget] = useState(null); // invoice index awaiting confirmation
   const timer = useRef(null);
+  const pollRef = useRef(null);
 
   // Load the original PDF for side-by-side review once the document resolves.
   useEffect(() => {
@@ -253,6 +256,7 @@ function ReviewPanel({ docId, apiKey, onReset }) {
         if (alive) setError(String(e.message || e));
       }
     };
+    pollRef.current = poll;
     poll();
     timer.current = setInterval(poll, 2500);
     return () => {
@@ -316,11 +320,25 @@ function ReviewPanel({ docId, apiKey, onReset }) {
     });
   };
 
+  const retryDoc = async () => {
+    setError("");
+    const r = await retryDocument(docId, apiKey);
+    toast(`Re-queued — ${r.queued || 1} document(s) for extraction.`);
+    setStatus("processing");
+    setError("");
+    pollRef.current?.();
+  };
+
   if (error) {
     return (
       <div className="panel">
         <p className="error">{error}</p>
-        <button className="primary" onClick={onReset}>Go back</button>
+        <div className="row-gap">
+          {status === "failed" ? (
+            <button className="primary" onClick={retryDoc}>Retry extraction</button>
+          ) : null}
+          <button className="ghost" onClick={onReset}>Go back</button>
+        </div>
       </div>
     );
   }
@@ -405,6 +423,30 @@ function ReviewPanel({ docId, apiKey, onReset }) {
         />
       ) : null}
     </div>
+  );
+}
+
+function AiQuotaBadge({ apiKey }) {
+  const [usage, setUsage] = useState(null);
+
+  const load = () => {
+    getAiUsage(apiKey).then(setUsage).catch(() => setUsage(null));
+  };
+  useEffect(load, [apiKey]);
+
+  if (!usage) return null;
+  const pct = usage.daily_limit ? Math.round((usage.used_today / usage.daily_limit) * 100) : 0;
+  const low = usage.remaining <= 2;
+  const empty = usage.remaining <= 0;
+  return (
+    <span className={`ai-meters`}>
+      <span className={`meter-chip ${low ? "warn" : ""}`} title={`${usage.provider} daily AI budget (free tier)`}>
+        <span className="meter-dot" />
+        {empty
+          ? "AI budget used up today — resets at midnight"
+          : `${usage.remaining} of ${usage.daily_limit} AI requests left today (${pct}% used)`}
+      </span>
+    </span>
   );
 }
 
@@ -531,6 +573,7 @@ function UploadPanel({ apiKey, onUploaded, onGotoDocs }) {
       <div className="hero">
         <h1>HaloHubX Document Engine</h1>
         <p className="muted">Upload GST invoices / POs in bulk — pick hundreds of PDFs at once.</p>
+        <AiQuotaBadge apiKey={apiKey} />
       </div>
 
       {phase === "select" ? (

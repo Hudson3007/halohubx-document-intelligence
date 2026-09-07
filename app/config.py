@@ -26,6 +26,16 @@ DEFAULT_AI_PROVIDER = os.environ.get("DEFAULT_AI_PROVIDER", "gemini")  # "claude
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
+# --- Daily AI request quota ---
+# Free-tier Gemini is capped at ~20 requests/day; a document extraction is one
+# request. Tracked per-day (UTC) so uploads fail fast instead of being charged
+# and then failing extraction, and so the UI can show remaining capacity.
+# Override per provider via env if you upgrade keys.
+AI_DAILY_LIMITS = {
+    "gemini": int(os.environ.get("GEMINI_DAILY_LIMIT", "20")),
+    "claude": int(os.environ.get("CLAUDE_DAILY_LIMIT", "200")),
+}
+
 # How many times to retry a webhook delivery before giving up.
 WEBHOOK_MAX_RETRIES = int(os.environ.get("WEBHOOK_MAX_RETRIES", "3"))
 

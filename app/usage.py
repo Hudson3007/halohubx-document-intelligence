@@ -30,3 +30,24 @@ def get_usage(
     payload["period"] = partner.current_month_ref or "unknown"
     payload["partner_name"] = partner.name
     return payload
+
+
+@router.get("/usage/ai")
+def get_ai_usage(
+    actor: Actor = Depends(get_actor),
+    db: Session = Depends(get_db),
+):
+    """Daily AI-request meter (free-tier Gemini ~20/day). Powers the console
+    hint and lets uploads fail fast instead of silently failing extraction."""
+    from app.ai_client import get_default_client
+    from app.quota import used_today, daily_limit
+
+    provider = get_default_client().provider
+    used = used_today(db, provider)
+    limit = daily_limit(provider)
+    return {
+        "provider": provider,
+        "used_today": used,
+        "daily_limit": limit,
+        "remaining": max(0, limit - used),
+    }
