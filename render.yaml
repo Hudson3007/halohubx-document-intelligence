@@ -39,6 +39,18 @@ services:
         sync: false
       - key: RAZORPAY_WEBHOOK_SECRET
         sync: false
+      # Cloud persistence for original PDF uploads (review preview). Set
+      # UPLOAD_STORAGE=supabase and supply these so PDFs survive Render's
+      # ephemeral disk on restart/sleep. Create a Storage bucket named by
+      # UPLOAD_BUCKET (default halohubx-uploads) in Supabase first.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: UPLOAD_STORAGE
+        value: "supabase"
+      - key: UPLOAD_BUCKET
+        value: "halohubx-uploads"
 
       # --- Recommended (safe defaults below) ---
       # The API refuses to connect as a DB superuser. Supabase's stock

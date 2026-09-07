@@ -17,32 +17,32 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth import get_actor, Actor, require_role
-from app.config import LOW_CONFIDENCE_THRESHOLD, UPLOAD_DIR
+from app.config import LOW_CONFIDENCE_THRESHOLD
 from app.db import get_db
 from app.models import Client, Document
+from app.storage import has_original_pdf, open_original_pdf, write_original_pdf
 from app.webhooks import deliver_webhook
 
 router = APIRouter(prefix="/documents", tags=["review"])
 
-UPLOAD_PATH = Path(UPLOAD_DIR)
-UPLOAD_PATH.mkdir(parents=True, exist_ok=True)
-
-
-def pdf_path(document_id: str) -> Path:
-    return UPLOAD_PATH / f"{document_id}.pdf"
-
 
 def save_original_pdf(document_id: str, file_bytes: bytes) -> None:
-    pdf_path(document_id).write_bytes(file_bytes)
+    write_original_pdf(document_id, file_bytes)
 
 
-def has_original_pdf(document_id: str) -> bool:
-    return pdf_path(document_id).exists()
+def has_stored_pdf(document_id: str) -> bool:
+    return has_original_pdf(document_id)
+
+
+def pdf_path(document_id: str):
+    """Return a file-like object for the stored PDF (kept for compatibility
+    with callers that expect to read bytes from it)."""
+    return open_original_pdf(document_id)
 
 
 def normalize_result(result: dict) -> dict:
@@ -194,13 +194,13 @@ def get_document_file(
 ):
     """Return the original uploaded PDF for side-by-side review preview."""
     _get_active_doc(db, actor.partner_id, document_id)
-    path = pdf_path(document_id)
-    if not path.exists():
+    if not has_original_pdf(document_id):
         raise HTTPException(status_code=404, detail="No original file stored for this document")
-    return FileResponse(
-        path,
+    content = open_original_pdf(document_id).read()
+    return Response(
+        content,
         media_type="application/pdf",
-        filename=f"{document_id}.pdf",
+        headers={"Content-Disposition": f'inline; filename="{document_id}.pdf"'},
     )
 
 
@@ -351,12 +351,8 @@ def approve_delete(
     )
     db.commit()
 
-    pdf = pdf_path(document_id)
-    try:
-        if pdf.exists():
-            pdf.unlink()
-    except Exception:
-        pass
+    from app.storage import delete_original_pdf
+    delete_original_pdf(document_id)
     db.delete(doc)
     db.commit()
     return {"document_id": document_id, "status": "purged"}

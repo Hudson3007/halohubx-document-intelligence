@@ -62,10 +62,18 @@ AUTH_RATE_LIMIT_PER_MIN = int(os.environ.get("AUTH_RATE_LIMIT_PER_MIN", "20"))
 # side-by-side preview of the source while a human corrects the extraction.
 # NOTE: this means the API now retains source files (a deliberate choice to
 # support human review); it is no longer zero-retention by default.
+#
+# On hosts with an ephemeral filesystem (Render free tier wipes disk on
+# restart/sleep/redeploy), set UPLOAD_STORAGE=supabase to persist PDFs in a
+# Supabase Storage bucket instead of local disk.
 UPLOAD_DIR = os.environ.get(
     "UPLOAD_DIR",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "uploads"),
 )
+UPLOAD_STORAGE = os.environ.get("UPLOAD_STORAGE", "disk").lower()  # "disk" or "supabase"
+UPLOAD_BUCKET = os.environ.get("UPLOAD_BUCKET", "halohubx-uploads")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # --- Billing / payments (Phase 3b) ---
 # Pricing: 1 credit = 1 PDF page. Purchased credits are added to the partner's

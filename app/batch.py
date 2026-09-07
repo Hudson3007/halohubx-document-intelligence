@@ -101,8 +101,8 @@ def _extract_in_background(document_id: str) -> None:
         doc = db.query(Document).filter(Document.id == document_id).first()
         if doc is None or doc.status == "failed":
             return
-        from app.review import pdf_path
-        file_bytes = pdf_path(document_id).read_bytes()
+        from app.storage import read_original_pdf
+        file_bytes = read_original_pdf(document_id)
 
         ai_client = get_default_client()
         try:
