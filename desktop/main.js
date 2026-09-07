@@ -82,40 +82,53 @@ function isApi(p) {
 }
 
 function proxy(req, res) {
-  const target = new URL(req.url, API_BASE);
+  // Read the request body once up front so redirects can replay it safely.
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => {
+    const body = Buffer.concat(chunks);
+    sendProxyRequest(req.url, req.method, req.headers, body, res, 5);
+  });
+}
+
+function sendProxyRequest(urlPath, method, headers, body, res, hopsLeft) {
+  const target = new URL(urlPath, API_BASE);
   const opts = {
     hostname: target.hostname,
     port: target.port,
     path: target.pathname + target.search,
-    method: req.method,
-    headers: Object.assign({}, req.headers, { host: target.host }),
+    method: method,
+    headers: Object.assign({}, headers, { host: target.host }),
   };
   const transport = target.protocol === "https:" ? https : http;
   const upstream = transport.request(opts, (upRes) => {
-    if (upRes.statusCode >= 300 && upRes.statusCode < 400 && upRes.headers.location) {
-      // Render redirects http -> https and app paths; follow it transparently.
+    // Render redirects (http->https, path normalization). Follow them fully
+    // server-side so the browser NEVER sees a 3xx + Location — otherwise the
+    // window would re-navigate away from the local proxy.
+    if (
+      upRes.statusCode >= 300 &&
+      upRes.statusCode < 400 &&
+      upRes.headers.location
+    ) {
+      upstream.abort();
+      if (hopsLeft <= 1) {
+        // Redirect loop we can't resolve — never hand the browser a Location.
+        upstreamError(res);
+        return;
+      }
       const nextBase = new URL(upRes.headers.location, target);
-      const nextOpts = {
-        hostname: nextBase.hostname,
-        port: nextBase.port,
-        path: nextBase.pathname + nextBase.search,
-        method: req.method,
-        headers: Object.assign({}, req.headers, { host: nextBase.host }),
-      };
-      const nextTransport = nextBase.protocol === "https:" ? https : http;
-      const nextReq = nextTransport.request(nextOpts, (nRes) => {
-        res.writeHead(nRes.statusCode, nRes.headers);
-        nRes.pipe(res);
-      });
-      nextReq.on("error", () => upstreamError(res));
-      req.pipe(nextReq);
+      sendProxyRequest(nextBase.pathname + nextBase.search, method, headers, body, res, hopsLeft - 1);
       return;
     }
-    res.writeHead(upRes.statusCode, upRes.headers);
+    // Strip hop-by-hop / redirect headers the client must not receive.
+    const outHeaders = Object.assign({}, upRes.headers);
+    delete outHeaders.location;
+    res.writeHead(upRes.statusCode, outHeaders);
     upRes.pipe(res);
   });
   upstream.on("error", () => upstreamError(res));
-  req.pipe(upstream);
+  if (body.length) upstream.write(body);
+  upstream.end();
 }
 
 function upstreamError(res) {
@@ -148,12 +161,19 @@ function serve(req, res) {
   }
 }
 
+function isBrowserNavigation(req) {
+  return (
+    req.headers["upgrade-insecure-requests"] === "1" ||
+    req.headers["sec-fetch-mode"] === "navigate"
+  );
+}
+
 function createServer() {
   server = http.createServer((req, res) => {
     const pathname = url.parse(req.url).pathname;
     if (isApi(pathname)) {
       proxy(req, res);
-    } else if (pathname === "/" && (!req.headers.accept || !req.headers.accept.includes("text/html"))) {
+    } else if (pathname === "/" && !isBrowserNavigation(req)) {
       proxy(req, res);
     } else {
       serve(req, res);
