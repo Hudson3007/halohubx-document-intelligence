@@ -246,7 +246,7 @@ function ReviewPanel({ docId, apiKey, onReset }) {
           setData(d);
           clearInterval(timer.current);
         } else if (s.status === "failed") {
-          setError("Extraction failed. Check the backend logs.");
+          setError(s.error || "Extraction failed. Check the backend logs.");
           clearInterval(timer.current);
         }
       } catch (e) {

@@ -265,6 +265,7 @@ def get_status(
         "created_at": doc.created_at,
         "completed_at": doc.completed_at,
         "webhook_delivered": doc.webhook_delivered,
+        "error": doc.error_message,
     }
 
 
