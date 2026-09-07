@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, session } = require("electron");
 const http = require("http");
 const https = require("https");
 const path = require("path");
@@ -222,7 +222,13 @@ app.whenReady().then(() => {
   createServer();
   // Ensure the local server is bound before loading the renderer so the
   // first HTTP request inside the window doesn't get ECONNREFUSED.
-  server.on("listening", () => createWindow());
+  server.on("listening", () => {
+    // Purge any cached redirects for the local console URL left behind by
+    // older builds (e.g. a stale 301 to a hosted backend), so the SPA always
+    // loads fresh.
+    session.defaultSession.clearCache(() => {});
+    createWindow();
+  });
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
