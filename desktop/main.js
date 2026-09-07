@@ -15,6 +15,7 @@ const API_PREFIXES = [
   "/hitl",
   "/documents",
   "/status",
+  "/retry",
   "/retrieve",
   "/search",
 ];

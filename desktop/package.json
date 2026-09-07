@@ -28,6 +28,10 @@
         "from": "../frontend/dist",
         "to": "app-dist",
         "filter": ["**/*"]
+      },
+      {
+        "from": "api-config.json",
+        "to": "api-config.json"
       }
     ],
     "win": {
