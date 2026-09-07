@@ -103,6 +103,19 @@ def _extract_in_background(document_id: str) -> None:
             return
         from app.storage import read_original_pdf
         file_bytes = read_original_pdf(document_id)
+        if not file_bytes:
+            # Transient hosts (Render free tier) wipe local storage on
+            # restart/redeploy; a missing original means retry is impossible
+            # without a fresh upload. Fail with a clear message rather than
+            # passing empty bytes into the provider.
+            doc.status = "failed"
+            doc.error_message = (
+                "Original PDF is no longer available on the server "
+                "(storage was cleared on restart/redeploy). Re-upload the document to retry."
+            )
+            db.commit()
+            log.info("batch.missing_original", extra={"document_id": document_id})
+            return
 
         ai_client = get_default_client()
         try:
