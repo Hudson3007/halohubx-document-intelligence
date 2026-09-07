@@ -6,9 +6,24 @@ the same way in both places.
 """
 
 import base64
+import re
 import time
 
 from app.config import ANTHROPIC_API_KEY, GEMINI_API_KEY, DEFAULT_AI_PROVIDER
+
+
+def _extract_retry_delay(exc: Exception) -> float | None:
+    """Gemini's 429 payloads say 'Please retry in 21.17s' and/or
+    'retry_delay { seconds: 21 }'. Return that (capped) so the caller waits
+    the real window instead of a guess."""
+    msg = str(exc)
+    m = re.search(r"retry(?:_delay\s*\{\s*seconds:\s*| in )(\d+)", msg, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return min(float(m.group(1)) + 1.0, 45.0)
+    except ValueError:
+        return None
 
 
 def _is_rate_limited(exc: Exception) -> bool:
@@ -34,19 +49,28 @@ def _friendly_error(exc: Exception) -> str:
     return msg
 
 
-def _retry_call(fn, *, attempts: int = 5, base_delay: float = 2.0):
-    """Call fn() with exponential backoff + jitter, retrying transient rate
-    limits. Fails fast on hard errors and per-DAY quota caps (retrying those
-    wastes time). Raises the last error if it never succeeds."""
+def _retry_call(fn, *, attempts: int = 6, base_delay: float = 2.0):
+    """Call fn() with backoff, retrying transient rate limits. Waits the
+    provider-reported retry_delay when present (Gemini free tier 429s say
+    'retry in 21s' — backing off only 2-16s never clears them). Fails fast
+    on hard errors and per-DAY quota caps (retrying those wastes time).
+    Raises the last error if it never succeeds."""
     last_exc = None
     for attempt in range(attempts):
         try:
             return fn()
         except Exception as exc:  # noqa: BLE001 - we re-raise at the end
             last_exc = exc
-            if attempt >= attempts - 1 or not _is_rate_limited(exc) or _is_daily_quota(exc):
+            delay = _extract_retry_delay(exc)
+            if attempt >= attempts - 1 or not _is_rate_limited(exc):
                 raise
-            delay = base_delay * (2 ** attempt) + (time.monotonic() % 1)
+            # Only bail on the daily cap if the provider gave NO wait time.
+            # Gem: the per-minute throttles share the daily-quota metric text
+            # but include a real 'retry in Ns' — we must wait, not fail-fast.
+            if _is_daily_quota(exc) and delay is None:
+                raise
+            if delay is None:
+                delay = base_delay * (2 ** attempt) + (time.monotonic() % 1)
             time.sleep(delay)
     assert last_exc is not None
     raise last_exc

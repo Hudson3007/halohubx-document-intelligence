@@ -74,21 +74,28 @@ def _validate_pdf(filename: str, content_type: str | None, file_bytes: bytes) ->
     return pages
 
 
-def _mark_stale_processing_failed() -> None:
-    """On startup, anything left 'processing' from a previous run can never be
-    finished by its thread (the process died). Flag them so they don't sit in
-    the queue forever."""
+def _requeue_stale_processing() -> None:
+    """On startup, anything left 'processing' from a previous run was being
+    extracted when the process died (Render restarts on deploy/sleep). Thanks
+    to Supabase storage the original PDFs survive, so instead of failing them
+    we re-queue them for extraction. Docs whose PDF truly is gone fail later
+    in the worker with a clear 're-upload' message."""
     db = SessionLocal()
     try:
         stale = db.query(Document).filter(Document.status == "processing").all()
         for doc in stale:
-            doc.status = "failed"
-            doc.error_message = "Interrupted — server restarted before extraction finished. Re-upload to retry."
+            db.add(doc)
         if stale:
             db.commit()
-            log.info("batch.marked_stale_failed", extra={"count": len(stale)})
+            for doc in stale:
+                db.refresh(doc)
+            # Fresh thread launches so the current startup isn't blocked.
+            for doc in stale:
+                _executor.submit(_extract_in_background, doc.id)
+            log.info("batch.requeued_stale", extra={"count": len(stale)})
     except Exception:
         db.rollback()
+        log.exception("batch.requeue_stale_error")
     finally:
         db.close()
 
@@ -167,7 +174,7 @@ def _extract_in_background(document_id: str) -> None:
         db.close()
 
 
-_mark_stale_processing_failed()
+_requeue_stale_processing()
 
 
 @router.post("/upload/batch")
