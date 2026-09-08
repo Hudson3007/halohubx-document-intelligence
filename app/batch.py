@@ -126,15 +126,15 @@ def _extract_in_background(document_id: str) -> None:
 
         ai_client = get_default_client()
         try:
-            from app.quota import record_request
-
-            def _on_attempt():
-                record_request(db, ai_client.provider, 1)
-
-            result = extract_document(ai_client, file_bytes, "application/pdf", on_attempt=_on_attempt)
+            result = extract_document(ai_client, file_bytes, "application/pdf")
             doc.result_json = result
             doc.status = "completed"
             doc.completed_at = datetime.utcnow()
+            # Google counts a SUCCESSFUL file request against RPD — failed
+            # throttled attempts don't. Record only after completion so the
+            # meter matches Google's own dashboard.
+            from app.quota import record_request
+            record_request(db, ai_client.provider, 1)
         except Exception as e:
             doc.status = "failed"
             from app.ai_client import _summarize_error
@@ -184,22 +184,33 @@ def _extract_in_background(document_id: str) -> None:
 
 def _auto_retry_quota_exhausted() -> None:
     """Background loop: free-tier Gemini caps at 20 file-based requests/day,
-    resetting at midnight UTC. When a NEW UTC day begins, automatically
-    re-queue every failed document whose error was a daily-quota rejection so
-    they get another chance without the user babysitting the Retry button.
+    resetting at midnight PACIFIC time (Google's window). When a NEW day
+    begins, automatically re-queue every failed document whose error was a
+    daily-quota rejection so they get another chance without the user
+    babysitting the Retry button.
+
+    A document is auto-retried at most once per day (tracked in-process);
+    per-minute throttles that make a retry fail again just wait for the next
+    day rather than hammering the provider every 60s.
 
     Runs as a daemon thread so it dies with the process on shutdown."""
+    _retried_today: set[str] = set()
+    _last_day = None
     while True:
         time.sleep(60)
         db = SessionLocal()
         try:
             from app.ai_client import get_default_client as _client
-            from app.quota import check_quota, mark_exhausted, used_today
+            from app.quota import _day_utc, remaining_today
 
             provider = _client().provider
+            day = _day_utc()
+            if _last_day != day:
+                _retried_today.clear()  # new (Pacific) day -> fresh retry slate
+                _last_day = day
 
-            # Only take action once the meter actually reset (midnight UTC).
-            if used_today(db, provider) >= daily_limit_safe(provider):
+            remaining = remaining_today(db, provider)
+            if remaining <= 0:
                 continue
 
             # Docs that failed with the daily-quota error are the targets.
@@ -215,26 +226,25 @@ def _auto_retry_quota_exhausted() -> None:
             )
             target = [
                 d for d in candidates
-                if "quota" in (d.error_message or "").lower()
+                if d.id not in _retried_today
+                and "quota" in (d.error_message or "").lower()
                 and ("daily" in (d.error_message or "").lower()
                      or "20 requests" in (d.error_message or "").lower())
             ]
             if not target:
                 continue
 
-            # Don't hammer: only retry as many as today's fresh budget allows,
-            # and space the launches so the provider's per-minute throttle
-            # doesn't eat them all in the first second.
-            from app.quota import remaining_today
-            budget = remaining_today(db, provider)
-            for doc in target[:budget]:
+            # Don't hammer: only retry as many as today's remaining budget
+            # allows, spaced so the provider's per-minute throttle isn't hit.
+            for doc in target[:remaining]:
                 doc.status = "processing"
                 doc.error_message = None
                 doc.completed_at = None
+                _retried_today.add(doc.id)
                 db.add(doc)
             db.commit()
 
-            for i, doc in enumerate(target[:budget]):
+            for i, doc in enumerate(target[:remaining]):
                 delay = i * 5.0
 
                 def _launch(document_id=doc.id, _delay=delay):
@@ -246,7 +256,7 @@ def _auto_retry_quota_exhausted() -> None:
 
             log.info(
                 "batch.auto_retry_after_reset",
-                extra={"retried": min(budget, len(target)), "provider": provider},
+                extra={"retried": min(remaining, len(target)), "provider": provider},
             )
         except Exception:
             db.rollback()
@@ -264,13 +274,6 @@ def _start_background_workers() -> None:
         name="hhx-quota-auto-retry",
         daemon=True,
     ).start()
-
-
-def daily_limit_safe(provider: str) -> int:
-    """Read the daily cap without pulling in the full quota module eagerly at
-    import time (that module imports config, not the DB)."""
-    from app.quota import daily_limit
-    return daily_limit(provider)
 
 
 _start_background_workers()

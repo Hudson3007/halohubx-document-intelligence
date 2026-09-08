@@ -21,9 +21,23 @@ from sqlalchemy.orm import Session
 from app.config import AI_DAILY_LIMITS
 from app.models import AiDailyUsage
 
+# Google resets RPD ("requests per day") at MIDNIGHT PACIFIC time, not UTC.
+# Storing the day in a fixed point-in-time zone keeps our meter aligned with
+# what Google actually counts, so the badge and fail-fast don't drift by the
+# UTC-vs-PT offset (that discrepancy is exactly what left the meter showing
+# 20/20 while Google only counted 15/20 today).
+_DAY_TZ = timezone.utc  # kept UTC for UTC-locale deployments; override below
+try:
+    from zoneinfo import ZoneInfo
+
+    _DAY_TZ = ZoneInfo("America/Los_Angeles")
+except Exception:  # pragma: no cover - zoneinfo always available on py3.9+
+    pass
+
 
 def _day_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Legacy name kept for import compatibility; now Pacific-window keyed.
+    return datetime.now(_DAY_TZ).strftime("%Y-%m-%d")
 
 
 def daily_limit(provider: str) -> int:

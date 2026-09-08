@@ -199,15 +199,15 @@ async def upload_document(
     ai_client = None
     try:
         ai_client = get_default_client()
-        from app.quota import record_request
-
-        def _on_attempt():
-            record_request(db, ai_client.provider, 1)
-
-        result = extract_document(ai_client, file_bytes, "application/pdf", on_attempt=_on_attempt)
+        result = extract_document(ai_client, file_bytes, "application/pdf")
         doc.result_json = result
         doc.status = "completed"
         doc.completed_at = datetime.utcnow()
+        # Google counts a SUCCESSFUL file request against RPD — failed
+        # throttled attempts don't. Record only after completion so the
+        # meter matches Google's own dashboard.
+        from app.quota import record_request
+        record_request(db, ai_client.provider, 1)
     except Exception as e:
         doc.status = "failed"
         from app.ai_client import _summarize_error

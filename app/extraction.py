@@ -110,11 +110,9 @@ def _clean_json_response(text: str) -> dict:
         raise
 
 
-def extract_document(ai_client, file_bytes: bytes, media_type: str, on_attempt=None) -> dict:
+def extract_document(ai_client, file_bytes: bytes, media_type: str) -> dict:
     """Runs extraction and returns the parsed result dict, matching the
     schema above. Raises on AI-call failure or unparseable output —
-    caller is responsible for catching and marking the Document 'failed'.
-    on_attempt (optional callable) is invoked before each real provider
-    attempt so quota meters count retries accurately."""
-    raw_text = ai_client.extract(file_bytes, media_type, EXTRACTION_PROMPT, on_attempt=on_attempt)
+    caller is responsible for catching and marking the Document 'failed'."""
+    raw_text = ai_client.extract(file_bytes, media_type, EXTRACTION_PROMPT)
     return _clean_json_response(raw_text)
