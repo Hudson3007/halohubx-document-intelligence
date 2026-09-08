@@ -28,9 +28,21 @@ def _extract_retry_delay(exc: Exception) -> float | None:
 
 def _is_rate_limited(exc: Exception) -> bool:
     """True if the error looks like a provider throttle/quota limit (429),
-    as opposed to a hard error (bad key, invalid PDF, etc)."""
+    server-busy or deadline timeout (502/503/504) — all transient and worth
+    retrying — as opposed to a hard error (bad key, invalid PDF, etc)."""
     msg = str(exc)
-    return "429" in msg or "quota" in msg.lower() or "rate" in msg.lower() or "RESOURCE_EXHAUSTED" in msg
+    return (
+        "429" in msg
+        or "quota" in msg.lower()
+        or "rate" in msg.lower()
+        or "RESOURCE_EXHAUSTED" in msg
+        or "DEADLINE_EXCEEDED" in msg
+        or "504" in msg
+        or "503" in msg
+        or "502" in msg
+        or "unavailable" in msg.lower()
+        or "timeout" in msg.lower()
+    )
 
 
 def _is_daily_quota(exc: Exception) -> bool:
@@ -132,7 +144,7 @@ class GeminiClient:
         content = [{"mime_type": media_type, "data": file_bytes}, prompt]
 
         def call():
-            response = self._model.generate_content(content, request_options={"timeout": 60})
+            response = self._model.generate_content(content, request_options={"timeout": 120})
             return response.text
 
         return _retry_call(call)
