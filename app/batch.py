@@ -22,7 +22,7 @@ Endpoint:
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
@@ -182,7 +182,98 @@ def _extract_in_background(document_id: str) -> None:
         db.close()
 
 
-_requeue_stale_processing()
+def _auto_retry_quota_exhausted() -> None:
+    """Background loop: free-tier Gemini caps at 20 file-based requests/day,
+    resetting at midnight UTC. When a NEW UTC day begins, automatically
+    re-queue every failed document whose error was a daily-quota rejection so
+    they get another chance without the user babysitting the Retry button.
+
+    Runs as a daemon thread so it dies with the process on shutdown."""
+    while True:
+        time.sleep(60)
+        db = SessionLocal()
+        try:
+            from app.ai_client import get_default_client as _client
+            from app.quota import check_quota, mark_exhausted, used_today
+
+            provider = _client().provider
+
+            # Only take action once the meter actually reset (midnight UTC).
+            if used_today(db, provider) >= daily_limit_safe(provider):
+                continue
+
+            # Docs that failed with the daily-quota error are the targets.
+            from app.models import Document as _Doc
+            candidates = (
+                db.query(_Doc)
+                .filter(
+                    _Doc.status == "failed",
+                    _Doc.deleted_at.is_(None),
+                    _Doc.error_message.isnot(None),
+                )
+                .all()
+            )
+            target = [
+                d for d in candidates
+                if "quota" in (d.error_message or "").lower()
+                and ("daily" in (d.error_message or "").lower()
+                     or "20 requests" in (d.error_message or "").lower())
+            ]
+            if not target:
+                continue
+
+            # Don't hammer: only retry as many as today's fresh budget allows,
+            # and space the launches so the provider's per-minute throttle
+            # doesn't eat them all in the first second.
+            from app.quota import remaining_today
+            budget = remaining_today(db, provider)
+            for doc in target[:budget]:
+                doc.status = "processing"
+                doc.error_message = None
+                doc.completed_at = None
+                db.add(doc)
+            db.commit()
+
+            for i, doc in enumerate(target[:budget]):
+                delay = i * 5.0
+
+                def _launch(document_id=doc.id, _delay=delay):
+                    if _delay:
+                        time.sleep(_delay)
+                    _executor.submit(_extract_in_background, document_id)
+
+                _launch()
+
+            log.info(
+                "batch.auto_retry_after_reset",
+                extra={"retried": min(budget, len(target)), "provider": provider},
+            )
+        except Exception:
+            db.rollback()
+            log.exception("batch.auto_retry_loop_error")
+        finally:
+            db.close()
+
+
+def _start_background_workers() -> None:
+    """Launched once at import: re-queue docs left 'processing' from a crash,
+    then start the midnight-quota auto-retry watcher."""
+    _requeue_stale_processing()
+    threading.Thread(
+        target=_auto_retry_quota_exhausted,
+        name="hhx-quota-auto-retry",
+        daemon=True,
+    ).start()
+
+
+def daily_limit_safe(provider: str) -> int:
+    """Read the daily cap without pulling in the full quota module eagerly at
+    import time (that module imports config, not the DB)."""
+    from app.quota import daily_limit
+    return daily_limit(provider)
+
+
+_start_background_workers()
 
 
 @router.post("/upload/batch")
