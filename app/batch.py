@@ -127,8 +127,11 @@ def _extract_in_background(document_id: str) -> None:
         ai_client = get_default_client()
         try:
             from app.quota import record_request
-            record_request(db, ai_client.provider, 1)
-            result = extract_document(ai_client, file_bytes, "application/pdf")
+
+            def _on_attempt():
+                record_request(db, ai_client.provider, 1)
+
+            result = extract_document(ai_client, file_bytes, "application/pdf", on_attempt=_on_attempt)
             doc.result_json = result
             doc.status = "completed"
             doc.completed_at = datetime.utcnow()
@@ -136,6 +139,11 @@ def _extract_in_background(document_id: str) -> None:
             doc.status = "failed"
             from app.ai_client import _summarize_error
             doc.error_message = _summarize_error(e)
+            from app.quota import mark_exhausted
+            from app.ai_client import _is_daily_quota
+
+            if _is_daily_quota(e):
+                mark_exhausted(db, getattr(ai_client, "provider", "gemini"))
         db.commit()
 
         from app import health as health_mod

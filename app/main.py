@@ -200,8 +200,11 @@ async def upload_document(
     try:
         ai_client = get_default_client()
         from app.quota import record_request
-        record_request(db, ai_client.provider, 1)
-        result = extract_document(ai_client, file_bytes, "application/pdf")
+
+        def _on_attempt():
+            record_request(db, ai_client.provider, 1)
+
+        result = extract_document(ai_client, file_bytes, "application/pdf", on_attempt=_on_attempt)
         doc.result_json = result
         doc.status = "completed"
         doc.completed_at = datetime.utcnow()
@@ -209,6 +212,11 @@ async def upload_document(
         doc.status = "failed"
         from app.ai_client import _summarize_error
         doc.error_message = _summarize_error(e)
+        from app.quota import mark_exhausted
+        from app.ai_client import _is_daily_quota
+
+        if ai_client is not None and _is_daily_quota(e):
+            mark_exhausted(db, ai_client.provider)
 
     db.commit()
     db.refresh(doc)

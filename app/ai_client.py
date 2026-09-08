@@ -67,14 +67,20 @@ def _friendly_error(exc: Exception) -> str:
     return msg
 
 
-def _retry_call(fn, *, attempts: int = 6, base_delay: float = 2.0):
+def _retry_call(fn, *, attempts: int = 6, base_delay: float = 2.0, on_attempt=None):
     """Call fn() with backoff, retrying transient rate limits. Waits the
     provider-reported retry_delay when present (Gemini free tier 429s say
     'retry in 21s' — backing off only 2-16s never clears them). Fails fast
     on hard errors and per-DAY quota caps (retrying those wastes time).
-    Raises the last error if it never succeeds."""
+    Raises the last error if it never succeeds.
+
+    on_attempt (optional callable) runs before EVERY provider call (including
+    retries) so the quota meter counts real usage: Google bills a free-tier
+    cap against every attempt it receives, not once per document."""
     last_exc = None
     for attempt in range(attempts):
+        if on_attempt is not None:
+            on_attempt()
         try:
             return fn()
         except Exception as exc:  # noqa: BLE001 - we re-raise at the end
@@ -109,12 +115,14 @@ class ClaudeClient:
         self.client = Anthropic(api_key=api_key)
         self.model = model
 
-    def extract(self, file_bytes: bytes, media_type: str, prompt: str) -> str:
+    def extract(self, file_bytes: bytes, media_type: str, prompt: str, on_attempt=None) -> str:
         b64 = base64.standard_b64encode(file_bytes).decode("utf-8")
         doc_block = {
             "type": "document",
             "source": {"type": "base64", "media_type": media_type, "data": b64},
         }
+        if on_attempt is not None:
+            on_attempt()
         message = self.client.messages.create(
             model=self.model,
             max_tokens=3000,
@@ -122,7 +130,9 @@ class ClaudeClient:
         )
         return "".join(b.text for b in message.content if b.type == "text")
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, on_attempt=None) -> str:
+        if on_attempt is not None:
+            on_attempt()
         message = self.client.messages.create(
             model=self.model,
             max_tokens=2000,
@@ -140,21 +150,21 @@ class GeminiClient:
         genai.configure(api_key=api_key)
         self._model = genai.GenerativeModel(model)
 
-    def extract(self, file_bytes: bytes, media_type: str, prompt: str) -> str:
+    def extract(self, file_bytes: bytes, media_type: str, prompt: str, on_attempt=None) -> str:
         content = [{"mime_type": media_type, "data": file_bytes}, prompt]
 
         def call():
             response = self._model.generate_content(content, request_options={"timeout": 120})
             return response.text
 
-        return _retry_call(call)
+        return _retry_call(call, on_attempt=on_attempt)
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, on_attempt=None) -> str:
         def call():
             response = self._model.generate_content(prompt, request_options={"timeout": 90})
             return response.text
 
-        return _retry_call(call)
+        return _retry_call(call, on_attempt=on_attempt)
 
 
 def get_default_client():

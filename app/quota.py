@@ -60,6 +60,26 @@ def record_request(db: Session, provider: str, n: int = 1) -> None:
     db.flush()
 
 
+def mark_exhausted(db: Session, provider: str) -> None:
+    """Set today's counter to the daily limit. Call when the provider itself
+    reports the per-day cap is hit, so the badge stops claiming remaining
+    requests that Google will reject anyway (Google counts retry attempts the
+    local meter can't see ahead of time)."""
+    day = _day_utc()
+    row = (
+        db.query(AiDailyUsage)
+        .filter(AiDailyUsage.provider == provider, AiDailyUsage.day == day)
+        .first()
+    )
+    limit = daily_limit(provider)
+    if row is None:
+        row = AiDailyUsage(provider=provider, day=day, requests=limit)
+        db.add(row)
+    elif row.requests < limit:
+        row.requests = limit
+    db.flush()
+
+
 def check_quota(db: Session, provider: str, needed: int = 1) -> None:
     """Raise HTTP 429 (with a clear message) when fewer than `needed`
     requests remain today. Call before charging credits / spawning work."""
