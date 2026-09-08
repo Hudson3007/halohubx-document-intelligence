@@ -106,8 +106,9 @@ def check_quota(db: Session, provider: str, needed: int = 1) -> None:
                 "error": "ai_quota_exhausted",
                 "message": (
                     f"Daily AI request quota reached ({remaining}/{limit} remaining). "
-                    "Extraction resumes after midnight UTC — re-upload then, "
-                    "or upgrade the provider API key for a higher daily limit."
+                    "Extraction resumes after midnight Pacific time (Google's "
+                    "reset window) — re-upload then, or upgrade the provider "
+                    "API key for a higher daily limit."
                 ),
                 "used": limit - remaining,
                 "limit": limit,
