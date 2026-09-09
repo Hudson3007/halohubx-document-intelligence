@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   acceptInvite,
   AuthError,
-  checkHealth,
   checkoutTopup,
   confirmDocument,
   createMember,
@@ -35,6 +34,7 @@ import {
   getBin,
   verifyPayment,
   searchDocuments,
+  waitForServer,
 } from "./api.js";
 
 const THRESHOLD = 0.85;
@@ -1082,6 +1082,41 @@ function DocumentsList({ apiKey, role, onOpen, initialClient }) {
   );
 }
 
+function WarmScreen({ warmup, onRetry }) {
+  const failed = warmup.state === "failed";
+  return (
+    <div className="panel splash-panel">
+      <div className="brand brand-block">
+        <span className="logo-mark">H</span>
+        <span className="brand-name">HaloHubX</span>
+      </div>
+      {!failed ? (
+        <>
+          <div className="spinner" />
+          <p className="muted">Waking the server…</p>
+          <p className="warmup-hint">
+            The free-tier backend sleeps after ~15 minutes idle and takes up to
+            a minute to boot. First request can be slow — this is normal.
+          </p>
+          <p className="warmup-timer">{warmup.secs}s</p>
+        </>
+      ) : (
+        <>
+          <p className="warmup-fail">The backend didn’t wake up in time.</p>
+          <button className="primary" onClick={onRetry}>
+            Try again
+          </button>
+          <p className="warmup-hint">
+            If this keeps happening, check that the server is running
+            (uvicorn app.main:app --reload) and that your network allows
+            outbound HTTPS.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AuthPanel({ onAuthenticated, initialKey, serverOk }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -1966,6 +2001,8 @@ export default function App() {
   const [docsClient, setDocsClient] = useState(null);
   const [docId, setDocId] = useState(null);
   const [serverOk, setServerOk] = useState(null);
+  const [warmup, setWarmup] = useState({ secs: 0, started: 0, state: "waiting" });
+  const [warmupTry, setWarmupTry] = useState(0);
   const [usage, setUsage] = useState(null);
 
   // Public invite-link route: /invite/<token> shows the accept screen.
@@ -1975,15 +2012,42 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    checkHealth().then(() => setServerOk(true)).catch(() => setServerOk(false));
-  }, []);
+    // The backend (Render free tier) sleeps after ~15 min idle and the first
+    // request can take 30-60s while the instance boots. Instead of one blind
+    // fetch, poll /healthz and surface the wait so the login screen can show
+    // "waking the server…" with a live counter instead of a stalled spinner.
+    let cancelled = false;
+    const started = Date.now();
+    setServerOk(null);
+    setWarmup({ secs: 0, started, state: "retrying" });
+    let timer = null;
+    waitForServer({
+      onProgress: (secs) => setWarmup((w) => ({ ...w, secs })),
+      timeoutMs: 60000,
+    })
+      .then(() => {
+        if (!cancelled) {
+          clearInterval(timer);
+          setServerOk(true);
+          setWarmup({ secs: 0, started: Date.now(), state: "waiting" });
+        }
+      })
+      .catch(() => {
+        clearInterval(timer);
+        if (!cancelled) setWarmup((w) => ({ ...w, state: "failed" }));
+      });
+    timer = setInterval(() => {
+      if (!cancelled) setWarmup((w) => ({ ...w, secs: Math.round((Date.now() - w.started) / 1000) }));
+    }, 1000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [warmupTry]);
 
   // Restore a persisted session by validating the stored token on load. Only
   // a 401 (expired/revoked session) forces a sign-out; a transient network
   // failure keeps the session so the user isn't logged out by a hiccup.
   const triedRestore = useRef(false);
   useEffect(() => {
-    if (!token || triedRestore.current) return;
+    if (!token || triedRestore.current || serverOk !== true) return;
     triedRestore.current = true;
     getDashboard(token)
       .then(() => setConnected(true))
@@ -1996,7 +2060,7 @@ export default function App() {
           setConnected(true);
         }
       });
-  }, [token]);
+  }, [token, serverOk]);
 
   // Called by AuthPanel after login or signup succeeds.
   const authenticate = async (res) => {
@@ -2049,7 +2113,9 @@ export default function App() {
     );
   }
 
-  const body = !connected ? (
+  const body = serverOk !== true ? (
+    <WarmScreen warmup={warmup} onRetry={() => setWarmupTry((t) => t + 1)} />
+  ) : !connected ? (
     token ? (
       <div className="panel splash-panel">
         <div className="spinner" />

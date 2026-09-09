@@ -140,6 +140,44 @@ export async function checkHealth() {
   return jfetch(`/`);
 }
 
+// Render free tier sleeps after ~15 min idle; the first request boots the
+// instance and can take 30-60s. Poll /healthz with per-attempt timeouts so
+// the UI can show a live "waking up" counter (via onProgress, elapsed secs)
+// instead of an indefinite spinner, and resolve only once the app answers.
+export function waitForServer({
+  timeoutMs = 90000,
+  perAttemptMs = 6000,
+  onProgress = () => {},
+} = {}) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const attempt = async () => {
+      const elapsed = Math.round((Date.now() - started) / 1000);
+      onProgress(elapsed);
+      if (Date.now() - started >= timeoutMs) {
+        return reject(new Error("Backend did not wake in time."));
+      }
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), perAttemptMs);
+      let hit = false;
+      try {
+        const res = await fetch(`${API_BASE}/healthz`, {
+          signal: ctrl.signal,
+          cache: "no-store",
+        });
+        hit = res.ok;
+      } catch {
+        /* still booting — keep polling */
+      } finally {
+        clearTimeout(tid);
+      }
+      if (hit) return resolve();
+      setTimeout(attempt, 1500);
+    };
+    attempt();
+  });
+}
+
 // Console auth — returns { api_key, partner_id, partner_name, user } on success.
 export async function login(body) {
   return jfetch(`/auth/login`, {

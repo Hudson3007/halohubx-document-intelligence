@@ -18,6 +18,8 @@ const API_PREFIXES = [
   "/retry",
   "/retrieve",
   "/search",
+  "/healthz",
+  "/readyz",
 ];
 
 // Where the Electron shell should forward API calls. Priority:

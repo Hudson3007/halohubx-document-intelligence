@@ -779,6 +779,28 @@ button:disabled {
   animation: spin 0.8s linear infinite;
 }
 
+.warmup-hint {
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 380px;
+  margin: 8px auto 0;
+  line-height: 1.5;
+}
+
+.warmup-fail {
+  color: var(--danger, #d93025);
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.warmup-timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--brand);
+  margin-top: 14px;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
