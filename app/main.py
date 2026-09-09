@@ -29,7 +29,7 @@ log = get_logger("main")
 from app.db import get_db
 from app.models import Partner, Client, Document, User
 from app.auth import get_actor, Actor, require_role
-from app.config import MAX_UPLOAD_BYTES
+from app.config import MAX_UPLOAD_BYTES, LOW_CONFIDENCE_THRESHOLD
 from app.extraction import extract_document
 from app.ai_client import get_default_client
 from app.billing import availability, charge_pages
@@ -39,7 +39,7 @@ from app import hitl, review, usage, auth_console, audit
 from app import payments as payments_mod
 from app import search as search_mod
 from app import batch as batch_mod
-from app.review import save_original_pdf
+from app.review import save_original_pdf, has_low_confidence
 from app import health as health_mod
 
 app = FastAPI(title="HaloHubX Document Intelligence API", version="0.1.0")
@@ -243,7 +243,12 @@ async def upload_document(
     )
     db.commit()
 
-    if doc.webhook_url and doc.status == "completed":
+    # Only deliver the webhook now if the extraction is final-quality. A
+    # low-confidence result is deferred to human review: POST /documents/{id}/approve
+    # (or /hitl/document/{id}/confirm) delivers the corrected payload once the
+    # reviewer approves — raw low-confidence data never ships to the ERP.
+    needs_review = has_low_confidence(doc.result_json, LOW_CONFIDENCE_THRESHOLD)
+    if doc.webhook_url and doc.status == "completed" and not needs_review:
         delivered = deliver_webhook(
             doc.webhook_url,
             {

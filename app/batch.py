@@ -19,6 +19,7 @@ Endpoint:
     POST /status/batch        {"document_ids": [...]} -> per-doc status
 """
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -157,7 +158,13 @@ def _extract_in_background(document_id: str) -> None:
             },
         )
 
-        if doc.webhook_url and doc.status == "completed":
+        # Defer delivery when the result is low-confidence: it must clear the
+        # HITL review queue (approve/confirm) first, matching the sync path.
+        from app.review import has_low_confidence
+        from app.config import LOW_CONFIDENCE_THRESHOLD
+
+        needs_review = has_low_confidence(doc.result_json, LOW_CONFIDENCE_THRESHOLD)
+        if doc.webhook_url and doc.status == "completed" and not needs_review:
             from app.webhooks import deliver_webhook
             client_name = None
             if doc.client_id:
@@ -267,7 +274,11 @@ def _auto_retry_quota_exhausted() -> None:
 
 def _start_background_workers() -> None:
     """Launched once at import: re-queue docs left 'processing' from a crash,
-    then start the midnight-quota auto-retry watcher."""
+    then start the midnight-quota auto-retry watcher.
+
+    Set HHX_DISABLE_BACKGROUND_WORKERS=1 to skip (used by the test suite and
+    by one-off maintenance scripts that import the app without wanting a
+    watcher thread holding sessions open)."""
     _requeue_stale_processing()
     threading.Thread(
         target=_auto_retry_quota_exhausted,
@@ -276,7 +287,8 @@ def _start_background_workers() -> None:
     ).start()
 
 
-_start_background_workers()
+if os.environ.get("HHX_DISABLE_BACKGROUND_WORKERS", "").lower() not in ("1", "true", "yes"):
+    _start_background_workers()
 
 
 @router.post("/upload/batch")
