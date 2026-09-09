@@ -214,7 +214,7 @@ function InvoiceEditor({ invoice, index, onChange, onRemove }) {
   );
 }
 
-function ReviewPanel({ docId, apiKey, onReset }) {
+function ReviewPanel({ docId, apiKey, onReset, onConfirmed }) {
   const [data, setData] = useState(null);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
@@ -276,6 +276,7 @@ function ReviewPanel({ docId, apiKey, onReset }) {
       setConfirmState("done");
       setMessage(`Confirmed. Status: ${r.status}${r.webhook_delivered ? " — webhook delivered." : ""}`);
       toast(`Approved — ${r.status}${r.webhook_delivered ? " · webhook delivered" : ""}`);
+      onConfirmed();
     } catch (e) {
       setConfirmState("idle");
       setError(String(e.message || e));
@@ -2058,7 +2059,7 @@ export default function App() {
       <AuthPanel onAuthenticated={authenticate} serverOk={serverOk} />
     )
   ) : docId ? (
-    <ReviewPanel docId={docId} apiKey={token} onReset={() => setDocId(null)} />
+    <ReviewPanel docId={docId} apiKey={token} onReset={() => setDocId(null)} onConfirmed={() => { setTab("docs"); setDocId(null); setDocsClient(null); }} />
   ) : tab === "dashboard" ? (
     <DashboardPanel apiKey={token} onOpenDoc={(id) => setDocId(id)} onGotoUpload={() => setTab("upload")} onGotoDocs={() => { setTab("docs"); setDocId(null); setDocsClient(null); }} />
   ) : tab === "docs" ? (

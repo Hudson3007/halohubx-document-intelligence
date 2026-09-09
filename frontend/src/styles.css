@@ -913,8 +913,12 @@ button:disabled {
 }
 
 .side-foot {
-  padding: 16px 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 10px 6px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: visible;
 }
 
 .ghost.full {
