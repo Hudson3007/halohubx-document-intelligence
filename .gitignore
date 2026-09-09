@@ -47,3 +47,11 @@ Thumbs.db
 # Electron desktop build artifacts
 desktop/node_modules/
 desktop/release/
+# Local desktop API config (tracked copy lives in api-config.json.example)
+desktop/api-config.json
+
+# ---- Local dev helpers / one-off scripts ----
+_inspect_docs.py
+start_backend.cmd
+backend.log*
+*.err
