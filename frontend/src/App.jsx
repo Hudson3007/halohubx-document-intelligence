@@ -831,7 +831,7 @@ function DashboardPanel({ apiKey, onOpenDoc, onGotoUpload, onGotoDocs }) {
           <p className="muted">Overview of extraction activity for this partner.</p>
         </div>
         <div className="row-gap">
-          <button className="add-doc-btn" onClick={onGotoDocs}>
+          <button className="add-doc-btn" onClick={onGotoUpload}>
             <span className="add-doc-ico">+</span>
             <span>Add document</span>
           </button>
@@ -947,7 +947,7 @@ function BinList({ items, loading, error, onApprove, onRestore, busy }) {
   );
 }
 
-function DocumentsList({ apiKey, role, onOpen, initialClient }) {
+function DocumentsList({ apiKey, role, onOpen, onGotoUpload, initialClient }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -1034,6 +1034,10 @@ function DocumentsList({ apiKey, role, onOpen, initialClient }) {
           <p className="muted">{isOwner ? "Manage the workspace. Deleted items wait here for you to approve or restore." : "Review documents. Deletes need owner approval."}</p>
         </div>
         <div className="row-gap">
+          <button className="add-doc-btn" onClick={onGotoUpload}>
+            <span className="add-doc-ico">+</span>
+            <span>Add document</span>
+          </button>
           {isOwner ? (
             <button className={`ghost ${showBin ? "active" : ""}`} onClick={() => setShowBin((v) => !v)}>
               {showBin ? "Show documents" : `Bin (${binItems.length})`}
@@ -2129,7 +2133,7 @@ export default function App() {
   ) : tab === "dashboard" ? (
     <DashboardPanel apiKey={token} onOpenDoc={(id) => setDocId(id)} onGotoUpload={() => setTab("upload")} onGotoDocs={() => { setTab("docs"); setDocId(null); setDocsClient(null); }} />
   ) : tab === "docs" ? (
-    <DocumentsList key={docsClient || "all"} apiKey={token} role={user?.role || "owner"} initialClient={docsClient} onOpen={(id) => setDocId(id)} />
+    <DocumentsList key={docsClient || "all"} apiKey={token} role={user?.role || "owner"} initialClient={docsClient} onOpen={(id) => setDocId(id)} onGotoUpload={() => setTab("upload")} />
   ) : tab === "search" ? (
     <SearchPanel apiKey={token} onOpen={(id) => setDocId(id)} />
   ) : tab === "usage" ? (
