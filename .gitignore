@@ -55,3 +55,6 @@ _inspect_docs.py
 start_backend.cmd
 backend.log*
 *.err
+
+# ---- Local deliverables (regenerated, large) ----
+demo.mp4
