@@ -247,6 +247,102 @@ These ship straight into Render / Cloudflare / ELK-style ingestors.
 
 ---
 
+## Production go-live runbook
+
+Everything below is currently in "demo-safe" configuration, so the app runs
+without any merchant keys. Do these in order — each step is independent and
+reversible, and nothing starts fake-charging real money until **step 4**.
+
+### 1. Provision a least-privilege database role (then kill superuser access)
+The API refuses to connect as a DB superuser unless `ALLOW_SUPERUSER_DB=1`.
+Today the deploy uses Supabase's stock `postgres` superuser URL, which is why
+that flag is set. Before going live, create an app role.
+
+In the Supabase SQL editor (one-time, as the admin `postgres` role):
+
+```sql
+-- Least-privilege app role: no superuser, no OWNER, no create/delete database.
+CREATE ROLE halohubx_app LOGIN PASSWORD 'replace-with-a-strong-random-password';
+
+-- Grant schema usage + full DML and DDL-on-owned-objects on the app schema.
+GRANT USAGE, CREATE ON SCHEMA public TO halohubx_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO halohubx_app;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO halohubx_app;
+-- Ensure new tables created by the app role are also usable (init_db runs as admin).
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO halohubx_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO halohubx_app;
+```
+
+Then:
+1. Build the connection URL as `postgresql://halohubx_app:<password>@db.<ref>.supabase.co:5432/postgres`.
+2. Set `DATABASE_URL` to that string in the Render dashboard.
+3. Set `ALLOW_SUPERUSER_DB=0` in `render.yaml` (or the dashboard) and redeploy.
+4. Verify: sign in, upload a document, approve it — the DML grant covers the
+   whole app flow. Keep the `postgres` superuser URL stored offline for DR.
+
+### 2. Add the CI accuracy gate's real provider key
+A successful CI run boots the whole Docker Compose stack **and** runs the
+benchmark accuracy gate (≥ 80% over the labelled set, ≥ 5 docs) whenever a
+provider key exists as a GitHub secret. That secret already exists
+(`GEMINI_API_KEY`). Note: a free-tier Gemini key only allows ~20 requests/day
+of total usage, which the benchmark (7 PDFs × 1 request each) plus manual demo
+uploads can exhaust; when the key is exhausted every extract returns HTTP 429
+and the gate fails with "zero fields scored". That is the gate working — but
+for a dependable CI you'll want a paid tier or a separate budgeted key:
+
+```bash
+gh secret set GEMINI_API_KEY   # paste a paid/separate key; re-run CI to confirm green
+```
+
+### 3. Set the real price
+`CREDIT_PRICE_PAISE` defaults to **200 paise = INR 2 per page** and backs
+every plan/top-up price shown in the console (plans are `quota × price`).
+Set Profezzo's real rate in `render.yaml` (or the dashboard) and restart:
+
+```yaml
+- key: CREDIT_PRICE_PAISE
+  value: "400"   # e.g. INR 4 per credit — your real rate
+```
+
+### 4. Enable real Razorpay (the only step that touches real money)
+The `POST /billing/dev/simulate` endpoint is the demo stand-in. It is gated by
+`ENABLE_DEV_PAYMENTS` (currently "true"). Do not flip it until the merchant
+keys exist — the checkout routes **503** when keys are missing:
+
+1. Create the Razorpay account; get `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
+   and `RAZORPAY_WEBHOOK_SECRET`.
+2. In the Razorpay dashboard, point the webhook at
+   `https://halohubx-api.onrender.com/billing/webhook` for the
+   `payment.captured` and `subscription.charged` / `subscription.activated`
+   events.
+3. Set the three `RAZORPAY_*` keys in the Render dashboard (never in git).
+4. Flip `ENABLE_DEV_PAYMENTS=0` in `render.yaml` and redeploy. The simulate
+   endpoint is now 404/disabled and real checkout + webhook are live.
+5. **Manual test (required, not automatable):** buy a small top-up and complete
+   a real Razorpay checkout, confirm the credits land in `GET /billing`, and
+   confirm a real webhook delivery is idempotent (replaying it does not double
+   credits).
+
+### 5. Uptime monitoring (free tier sleeps)
+Render's free tier spins down after inactivity; the desktop app already shows
+a cold-start splash while it wakes. For production, add a cron ping so the API
+stays warm and you notice long outages:
+
+```bash
+# UptimeRobot / crontab / any ping every ~10 min:
+curl -fsS https://halohubx-api.onrender.com/healthz
+```
+
+Probe `/healthz` (liveness) and optionally `/readyz` (DB reachable).
+
+### 6. Lock down auth endpoints (verify 429s)
+In-process rate limiting is already active on signup/login/invite-accept
+(`AUTH_RATE_LIMIT_PER_MIN`, default 20 req/min/IP → HTTP 429). For a real
+launch, put an edge gateway (nginx/Cloudflare) in front for a distributed
+limit; the in-process limiter only guards a single worker.
+
+---
+
 ## Support / next steps
 We'll walk the sample-set benchmark through your first batch of real PDFs
 and refresh the site's accuracy chart with the result. Ask us for:
