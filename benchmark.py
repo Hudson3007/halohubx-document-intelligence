@@ -251,7 +251,7 @@ def build_html(rows, agg, ok, tot, out_path):
              "</style></head><body>")
     l.append(f"<h1>HaloHubX Extraction Benchmark</h1>")
     l.append(f"<div class='card'><span class='tot'>Overall field accuracy: "
-             f"{100.0 * ok / tot:.1f}%</span> &nbsp;(<b>{ok}</b> / {tot} scored fields, "
+             f"{100.0 * ok / tot if tot else 0:.1f}%</span> &nbsp;(<b>{ok}</b> / {tot} scored fields, "
              f"{len(rows)} document(s))</div>")
 
     l.append("<h2>Per-field accuracy</h2><table><tr><th>Field</th><th>Correct / Total</th><th>Accuracy</th></tr>")
@@ -286,6 +286,7 @@ def build_html(rows, agg, ok, tot, out_path):
                      f"across {len(confs)} fields</p>")
     l.append("</body></html>")
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(l), encoding="utf-8")
 
 
