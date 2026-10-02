@@ -29,9 +29,6 @@ MIGRATIONS = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS session_revoked BOOLEAN DEFAULT FALSE",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_failed_attempts INTEGER DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS login_locked_until TIMESTAMP",
-    "ALTER TABLE partners ADD COLUMN IF NOT EXISTS plan VARCHAR DEFAULT 'starter'",
-    "ALTER TABLE partners ADD COLUMN IF NOT EXISTS razorpay_customer_id VARCHAR",
-    "ALTER TABLE partners ADD COLUMN IF NOT EXISTS subscription_id VARCHAR",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS delete_requested_by VARCHAR",
 ]

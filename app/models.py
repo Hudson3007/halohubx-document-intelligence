@@ -41,10 +41,10 @@ class Partner(Base):
     default_webhook_url = Column(String, nullable=True)
     zero_data_retention = Column(Boolean, default=False)
 
-    # --- Usage / credit metering ---
+    # --- Usage / credit metering (admin-provisioned) ---
     # Pricing model: 1 credit = 1 PDF page scanned.
     #   monthly_credit_quota : credits granted every reset period (resets)
-    #   topup_credits        : one-time purchased/add-on pool (never resets)
+    #   topup_credits        : one-time add-on pool, granted via create_partner.py (never resets)
     #   current_month_used   : pages charged in the current period
     #   current_month_ref    : e.g. "2026-09" — whose usage current_month_used counts
     # Extraction proceeds while (topup_credits + (quota - current_month_used)) > 0.
@@ -53,14 +53,6 @@ class Partner(Base):
     topup_credits = Column(Integer, default=0)
     current_month_used = Column(Integer, default=0)
     current_month_ref = Column(String, nullable=True)
-
-    # --- Billing / payments (Phase 3b) ---
-    # Subscription plan id (see config.PLAN_QUOTAS) governing the monthly quota
-    # that resets each period, plus the Razorpay-side ids for the customer and
-    # the active subscription so we can reconcile webhooks.
-    plan = Column(String, default="starter", nullable=False)
-    razorpay_customer_id = Column(String, nullable=True)
-    subscription_id = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -181,33 +173,4 @@ class AiDailyUsage(Base):
     provider = Column(String, nullable=False, index=True)  # "gemini" | "claude"
     day = Column(String, nullable=False, index=True)       # UTC date "YYYY-MM-DD"
     requests = Column(Integer, nullable=False, default=0)  # requests used this day
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class CreditOrder(Base):
-    """A purchase/ledger record for paid credits or a plan subscription.
-
-    One row per Razorpay order:
-      * order_type "topup" — buying a pack of credits (added to topup pool)
-      * order_type "plan"  — a recurring plan subscription (sets monthly quota)
-
-    status lifecycle: pending -> paid | failed. On a successful captured
-    payment the webhook flips status to "paid" and applies the credits (or
-    plan). Razorpay's order/payment/signature ids are kept for reconciliation
-    and the webhook signature check.
-    """
-
-    __tablename__ = "credit_orders"
-
-    id = Column(String, primary_key=True, default=_uuid)
-    partner_id = Column(String, ForeignKey("partners.id"), nullable=False, index=True)
-    order_type = Column(String, nullable=False, default="topup")  # topup | plan
-    plan = Column(String, nullable=True)          # for plan orders: target plan id
-    credits = Column(Integer, nullable=False, default=0)  # credits granted on payment
-    amount_paise = Column(Integer, nullable=False, default=0)  # price paid (INR paise)
-    razorpay_order_id = Column(String, nullable=True, index=True)
-    razorpay_payment_id = Column(String, nullable=True)
-    razorpay_signature = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="pending")  # pending | paid | failed | refunded
-    created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

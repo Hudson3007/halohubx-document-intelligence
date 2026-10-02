@@ -125,53 +125,24 @@ when it wasn't, we improve the extractor first rather than bury it.
 
 ---
 
-## Credit metering (productised billing)
+## Credit metering (reseller provisioning)
 
 - **Unit:** 1 credit = 1 PDF page scanned.
 - **Two pools per partner:** a monthly quota that resets each period, plus a
   top-up pool that never resets. Top-ups are consumed first.
 - `POST /upload` counts PDF pages, checks the balance, and returns **HTTP 402
   `insufficient_credits`** if you're out.
-- The console shows the meter (top bar) and a full **Usage** page from
-  `GET /usage`.
+- Quotas/top-ups are provisioned by **you** (the platform owner) with
+  `create_partner.py --quota <n> --topup <m>` — no self-serve checkout.
+- Usage is auditable per document via `page_count`; the console shows the
+  daily AI-request meter (`GET /usage/ai`) for the shared provider key.
 
-This is the reseller-friendly model we built with you: your partners get a
-quota, you can top them up, and usage is auditable per document via
-`page_count`.
-
-## Paid billing (Razorpay) — Phase 3b
-
-Real credit purchases are wired to **Razorpay** in a mixed model:
-
-- **Plans**: each subscription tier sets the monthly quota that resets each
-  period (`starter` 1000 / `growth` 5000 / `scale` 20000 credits-month).
-- **Top-ups**: prepaid credit packs, added to the non-expiring balance and
-  consumed before the monthly quota.
-- **Pricing**: a single rate knob, `CREDIT_PRICE_PAISE` (default **200 paise =
-  INR 2 per page**). A plan's monthly price = `quota × CREDIT_PRICE_PAISE`,
-  and a top-up pack = `credits × CREDIT_PRICE_PAISE`. **This rate is a
-  placeholder — change `CREDIT_PRICE_PAISE` and restart to set the real one.**
-
-### Endpoints
-- `GET  /billing/plans` — public plan catalogue (id, quota, price).
-- `GET  /billing` — per-partner snapshot (plan, balance, price, order history).
-- `POST /billing/checkout/topup` (owner) — create a Razorpay order for a pack.
-- `POST /billing/subscribe` (owner) — create/change a subscription plan.
-- `POST /billing/payments/verify` (owner) — verify signature, credit payment.
-- `POST /billing/webhook` — Razorpay webhook (signature-verified, idempotent).
-- `POST /billing/dev/simulate` — **dev/demo ONLY** (gated by
-  `ENABLE_DEV_PAYMENTS`, must be off in production).
-
-The console has a **Billing** tab (owners) to subscribe, buy top-ups, and see
-order history.
-
-### To go live
-1. Create a Razorpay account and set `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
-   and `RAZORPAY_WEBHOOK_SECRET` (configure the webhook URL for the
-   `payment.captured` and `subscription.charged/activated` events).
-2. Set the real price in `CREDIT_PRICE_PAISE` and the plan quotas if desired.
-3. **Set `ENABLE_DEV_PAYMENTS=false` in production** so the simulate endpoint
-   is removed.
+> **Billing (Razorpay) removed.** The pay-per-credit checkout layer (plans,
+> top-ups, `POST /billing/*`, `ENABLE_DEV_PAYMENTS`) was stripped in favour of
+> the white-label resell model: partners get a provisioned quota, you manage
+> their pool manually via `create_partner.py`. If a partner later needs
+> self-serve recharges, add back a checkout later — the `billing.py` credit
+> enforcement survived intact so the data model is still there.
 
 ---
 
@@ -251,7 +222,8 @@ These ship straight into Render / Cloudflare / ELK-style ingestors.
 
 Everything below is currently in "demo-safe" configuration, so the app runs
 without any merchant keys. Do these in order — each step is independent and
-reversible, and nothing starts fake-charging real money until **step 4**.
+reversible. (The old pay-per-credit Razorpay step is gone: partner quotas are
+provisioned by you via `create_partner.py`, not self-serve checkout.)
 
 ### 1. Provision a least-privilege database role (then kill superuser access)
 The API refuses to connect as a DB superuser unless `ALLOW_SUPERUSER_DB=1`.
@@ -294,36 +266,19 @@ for a dependable CI you'll want a paid tier or a separate budgeted key:
 gh secret set GEMINI_API_KEY   # paste a paid/separate key; re-run CI to confirm green
 ```
 
-### 3. Set the real price
-`CREDIT_PRICE_PAISE` defaults to **200 paise = INR 2 per page** and backs
-every plan/top-up price shown in the console (plans are `quota × price`).
-Set Profezzo's real rate in `render.yaml` (or the dashboard) and restart:
+### 3. Provision partner quotas (replaces the price/meter knobs)
+With the checkout layer removed, each partner's quota is set by you:
 
-```yaml
-- key: CREDIT_PRICE_PAISE
-  value: "400"   # e.g. INR 4 per credit — your real rate
+```bash
+python create_partner.py "Partners LLC" --quota 5000 --topup 1000 \
+  --webhook https://client-erp.example.com/hook
 ```
 
-### 4. Enable real Razorpay (the only step that touches real money)
-The `POST /billing/dev/simulate` endpoint is the demo stand-in. It is gated by
-`ENABLE_DEV_PAYMENTS` (currently "true"). Do not flip it until the merchant
-keys exist — the checkout routes **503** when keys are missing:
+`--quota` sets the monthly pool (resets each period), `--topup` adds a
+one-time never-expiring pool (consumed first); re-run with `--topup` to grant
+more. There is no customer-facing price left in the console.
 
-1. Create the Razorpay account; get `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
-   and `RAZORPAY_WEBHOOK_SECRET`.
-2. In the Razorpay dashboard, point the webhook at
-   `https://halohubx-api.onrender.com/billing/webhook` for the
-   `payment.captured` and `subscription.charged` / `subscription.activated`
-   events.
-3. Set the three `RAZORPAY_*` keys in the Render dashboard (never in git).
-4. Flip `ENABLE_DEV_PAYMENTS=0` in `render.yaml` and redeploy. The simulate
-   endpoint is now 404/disabled and real checkout + webhook are live.
-5. **Manual test (required, not automatable):** buy a small top-up and complete
-   a real Razorpay checkout, confirm the credits land in `GET /billing`, and
-   confirm a real webhook delivery is idempotent (replaying it does not double
-   credits).
-
-### 5. Uptime monitoring (free tier sleeps)
+### 4. Uptime monitoring (free tier sleeps)
 Render's free tier spins down after inactivity; the desktop app already shows
 a cold-start splash while it wakes. For production, add a cron ping so the API
 stays warm and you notice long outages:
@@ -335,7 +290,7 @@ curl -fsS https://halohubx-api.onrender.com/healthz
 
 Probe `/healthz` (liveness) and optionally `/readyz` (DB reachable).
 
-### 6. Lock down auth endpoints (verify 429s)
+### 5. Lock down auth endpoints (verify 429s)
 In-process rate limiting is already active on signup/login/invite-accept
 (`AUTH_RATE_LIMIT_PER_MIN`, default 20 req/min/IP → HTTP 429). For a real
 launch, put an edge gateway (nginx/Cloudflare) in front for a distributed

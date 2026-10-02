@@ -33,12 +33,6 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: RAZORPAY_KEY_ID
-        sync: false
-      - key: RAZORPAY_KEY_SECRET
-        sync: false
-      - key: RAZORPAY_WEBHOOK_SECRET
-        sync: false
       # Cloud persistence for original PDF uploads (review preview). Set
       # UPLOAD_STORAGE=supabase and supply these so PDFs survive Render's
       # ephemeral disk on restart/sleep. Create a Storage bucket named by
@@ -61,11 +55,6 @@ services:
       # No local backend on the server; force remote Postgres over TLS.
       - key: DB_SSL_DISABLE
         value: "false"
-      # Demo mode while Razorpay is unset: exposes the dev-simulate billing
-      # endpoint (free +demo credits, change plan). FLIP TO "false" the moment
-      # real RAZORPAY_* keys are added — never run simulate in production.
-      - key: ENABLE_DEV_PAYMENTS
-        value: "true"
       - key: LOG_JSON
         value: "1"
       - key: LOG_LEVEL

@@ -2,24 +2,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   acceptInvite,
   AuthError,
-  checkoutTopup,
   confirmDocument,
   createMember,
-  devSimulateBilling,
   documentFileUrl,
   getAudit,
-  getBilling,
-  getBillingPlans,
   getDashboard,
   getDocumentForReview,
   getStatus,
-  getUsage,
   inviteInfo,
   listMembers,
   login,
   logout,
   signup,
-  subscribePlan,
   updateMember,
   removeMember,
   uploadBatch,
@@ -32,7 +26,6 @@ import {
   restoreDocument,
   approveDelete,
   getBin,
-  verifyPayment,
   searchDocuments,
   waitForServer,
 } from "./api.js";
@@ -721,71 +714,6 @@ function DocsTable({ docs, loading, error, onOpen, empty, onDelete, role }) {
   );
 }
 
-function CreditMeter({ usage, compact }) {
-  if (!usage) return null;
-  const usedPct = Math.min(100, Math.round((usage.current_month_used / usage.monthly_quota) * 100));
-  if (compact) {
-    return (
-      <div className="credit-chip" title={compactUsageTitle(usage)}>
-        <span className="credit-dot" />
-        {usage.remaining_total} credits left
-      </div>
-    );
-  }
-  return (
-    <div className="meter">
-      <div className="meter-head">
-        <span className="muted">Monthly usage · {usage.period}</span>
-        <strong>{usage.current_month_used} / {usage.monthly_quota} credits</strong>
-      </div>
-      <div className="meter-bar"><div className="meter-fill" style={{ width: `${usedPct}%` }} /></div>
-      <div className="meter-legend">
-        <span>Top-up balance: <strong>{usage.topup_credits}</strong></span>
-        <span>Remaining this month: <strong>{usage.remaining_monthly}</strong></span>
-        <span>Total available: <strong>{usage.remaining_total}</strong></span>
-      </div>
-    </div>
-  );
-}
-
-function compactUsageTitle(u) {
-  return `Credits: ${u.remaining_total} total (quota ${u.remaining_monthly} remaining this month + ${u.topup_credits} top-up)`;
-}
-
-function UsagePanel({ apiKey }) {
-  const [usage, setUsage] = useState(null);
-  const [err, setErr] = useState("");
-  const load = () => {
-    setErr("");
-    getUsage(apiKey).then(setUsage).catch((e) => setErr(String(e.message || e)));
-  };
-  useEffect(load, [apiKey]);
-  return (
-    <div className="panel">
-      <div className="recent-head">
-        <div>
-          <h2>Usage &amp; credits</h2>
-          <p className="muted">1 credit = 1 PDF page scanned. Top-up credits are used first, then your monthly quota. Unused monthly credits reset each period.</p>
-        </div>
-        <button className="ghost" onClick={load}>Refresh</button>
-      </div>
-      {err ? <p className="error">{err}</p> : null}
-      {!usage && !err ? <p className="muted">Loading…</p> : null}
-      {usage ? (
-        <>
-          <CreditMeter usage={usage} />
-          <div className="stat-grid" style={{ marginTop: 22 }}>
-            <div className="stat-card"><span className="stat-num">{usage.monthly_quota}</span><span>Monthly quota</span></div>
-            <div className="stat-card"><span className="stat-num">{usage.current_month_used}</span><span>Used this period</span></div>
-            <div className="stat-card"><span className="stat-num">{usage.remaining_monthly}</span><span>Remaining this month</span></div>
-            <div className="stat-card"><span className="stat-num">{usage.topup_credits}</span><span>Top-up balance</span></div>
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
 function DashboardPanel({ apiKey, onOpenDoc, onGotoUpload, onGotoDocs }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1290,10 +1218,6 @@ function Icon({ name, size = 20 }) {
       return <svg {...p}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>;
     case "search":
       return <svg {...p}><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>;
-    case "usage":
-      return <svg {...p}><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg>;
-    case "billing":
-      return <svg {...p}><rect x="2" y="4" width="20" height="16" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>;
     case "audit":
       return <svg {...p}><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>;
     case "members":
@@ -1341,8 +1265,6 @@ const NAV = [
   { id: "upload", label: "Upload", icon: "upload", ownerOnly: true },
   { id: "docs", label: "Documents", icon: "docs" },
   { id: "search", label: "Search", icon: "search" },
-  { id: "usage", label: "Usage", icon: "usage" },
-  { id: "billing", label: "Billing", icon: "billing", ownerOnly: true },
   { id: "audit", label: "Activity", icon: "audit" },
   { id: "members", label: "Members", icon: "members", ownerOnly: true },
 ];
@@ -1820,175 +1742,6 @@ function SearchPanel({ apiKey, onOpen }) {
   );
 }
 
-function fmtPaise(paise) {
-  return `₹${(paise / 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
-}
-
-function BillingPanel({ apiKey }) {
-  const [bill, setBill] = useState(null);
-  const [catalogue, setCatalogue] = useState([]);
-  const [err, setErr] = useState("");
-  const [busy, setBusy] = useState("");
-  const [topup, setTopup] = useState(1000);
-  const [msg, setMsg] = useState("");
-
-  const load = () => {
-    setErr(""); setMsg("");
-    getBilling(apiKey)
-      .then(setBill)
-      .catch((e) => setErr(String(e.message || e)));
-    getBillingPlans()
-      .then((r) => setCatalogue(r.plans || []))
-      .catch(() => {});
-  };
-  useEffect(load, [apiKey]);
-
-  const run = async (label, fn, successMsg) => {
-    setBusy(label); setErr(""); setMsg("");
-    try {
-      const r = await fn();
-      setMsg(successMsg);
-      load();
-      return r;
-    } catch (e) {
-      setErr(String(e.message || e));
-    } finally {
-      setBusy("");
-    }
-  };
-
-  const buyTopup = () =>
-    run("topup", async () => {
-      const chk = await checkoutTopup(apiKey, topup);
-      if (!window.Razorpay) {
-        const s = document.createElement("script");
-        s.src = "https://checkout.razorpay.com/v1/checkout.js";
-        s.async = true;
-        await new Promise((res, rej) => { s.onload = res; s.onerror = rej; document.head.appendChild(s); });
-      }
-      const rzp = new window.Razorpay({
-        key: chk.key_id,
-        amount: chk.amount_paise,
-        currency: chk.currency,
-        name: "HaloHubX",
-        description: `${chk.credits} credits top-up`,
-        order_id: chk.razorpay_order_id,
-        prefill: { name: "HaloHubX Partner" },
-        handler: async (resp) => {
-          await verifyPayment(apiKey, {
-            razorpay_order_id: resp.razorpay_order_id,
-            razorpay_payment_id: resp.razorpay_payment_id,
-            razorpay_signature: resp.razorpay_signature,
-          });
-          toast(`Payment successful! ${chk.credits} credit(s) added.`);
-          setMsg(`Payment successful! ${chk.credits} credit(s) added to your balance.`);
-          load();
-        },
-        modal: { ondismiss: () => setBusy("") },
-      });
-      rzp.open();
-      return null;
-    }, "");
-  const subscribe = (plan) =>
-    run("plan", () => subscribePlan(apiKey, plan), `Subscribed to the ${plan} plan.`);
-  const simulate = (which) =>
-    run("sim", () =>
-      devSimulateBilling(apiKey, which === "plan" ? { plan: "growth" } : { credits: 500 }),
-      which === "plan" ? "Applied the growth plan (demo)." : "Added 500 credit(s) (demo).");
-
-  return (
-    <div className="panel">
-      <div className="recent-head">
-        <div>
-          <h2>Billing &amp; credits</h2>
-          <p className="muted">1 credit = 1 PDF page. Subscriptions set your monthly quota; top-ups add to your pre-paid balance.</p>
-        </div>
-        <button className="ghost" onClick={load}>Refresh</button>
-      </div>
-      {err ? <p className="error">{err}</p> : null}
-      {msg ? <p className="ok">{msg}</p> : null}
-      {!bill && !err ? <p className="muted">Loading…</p> : null}
-
-      {bill ? (
-        <>
-          <CreditMeter usage={bill.usage} />
-          <div className="stat-grid" style={{ marginTop: 22 }}>
-            <div className="stat-card"><span className="stat-num">{bill.plan}</span><span>Plan</span></div>
-            <div className="stat-card"><span className="stat-num">{bill.usage.monthly_quota}</span><span>Monthly quota</span></div>
-            <div className="stat-card"><span className="stat-num">{bill.usage.topup_credits}</span><span>Top-up balance</span></div>
-            <div className="stat-card"><span className="stat-num">{fmtPaise(bill.credit_price_paise)}</span><span>per credit</span></div>
-          </div>
-
-          <h3 style={{ marginTop: 26 }}>Subscription plans</h3>
-          <div className="stat-grid">
-            {catalogue.map((p) => (
-              <div className="stat-card" key={p.id}>
-                <span className="stat-num">{p.id}</span>
-                <span>{p.monthly_quota.toLocaleString("en-IN")} cr/mo · {fmtPaise(p.monthly_price_paise)}/mo</span>
-                <button
-                  className="ghost"
-                  style={{ marginTop: 8 }}
-                  disabled={busy}
-                  onClick={() => subscribe(p.id)}
-                >
-                  {bill.plan === p.id ? "Current plan" : busy === "plan" ? "…" : `Subscribe ${p.id}`}
-                </button>
-              </div>
-            ))}
-          </div>
-
-          <h3 style={{ marginTop: 26 }}>Buy top-up credits</h3>
-          <div className="grid2" style={{ maxWidth: 420 }}>
-            <label className="field">
-              <span className="field-label">Credits (non-expiring)</span>
-              <input
-                type="number" min={100} step={100} value={topup}
-                onChange={(e) => setTopup(parseInt(e.target.value, 10) || 0)}
-              />
-            </label>
-            <div className="field"><span className="field-label">&nbsp;</span>
-              <button className="primary" disabled={busy || topup <= 0} onClick={buyTopup}>
-                {busy === "topup" ? "Creating…" : `Buy ${fmtPaise(topup * (bill.credit_price_paise || 0))}`}
-              </button>
-            </div>
-          </div>
-
-          {bill.dev_enabled ? (
-            <div className="invite-result" style={{ marginTop: 20 }}>
-              <span className="muted" style={{ flex: 1 }}>
-                Demo mode (no Razorpay key): grant credits or apply a plan locally.
-              </span>
-              <button className="ghost" disabled={busy} onClick={() => simulate("credits")}>
-                {busy === "sim" ? "…" : "+500 demo credits"}
-              </button>
-              <button className="ghost" disabled={busy} onClick={() => simulate("plan")}>
-                {busy === "sim" ? "…" : "Apply growth plan"}
-              </button>
-            </div>
-          ) : null}
-
-          <h3 style={{ marginTop: 26 }}>Recent orders</h3>
-          {!bill.orders.length ? <p className="muted">No purchases yet.</p> : null}
-          <div className="doc-table">
-            {bill.orders.map((o) => (
-              <div className="doc-row" key={o.id}>
-                <div className="doc-main">
-                  <strong>{o.type === "plan" ? "Plan" : "Top-up"}{o.plan ? ` · ${o.plan}` : ""}</strong>
-                  <span className={`status-badge ${o.status === "paid" ? "" : "warn"}`}>{o.status}</span>
-                </div>
-                <div className="doc-meta">
-                  <span>{o.credits?.toLocaleString("en-IN")} credits · {fmtPaise(o.amount_paise)}</span>
-                  <span>{new Date(o.created_at).toLocaleString()}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
 export default function App() {
   const [session, setSession] = useState(() => {
     try {
@@ -2007,7 +1760,6 @@ export default function App() {
   const [serverOk, setServerOk] = useState(null);
   const [warmup, setWarmup] = useState({ secs: 0, started: 0, state: "waiting" });
   const [warmupTry, setWarmupTry] = useState(0);
-  const [usage, setUsage] = useState(null);
 
   // Public invite-link route: /invite/<token> shows the accept screen.
   const inviteToken = useMemo(() => {
@@ -2074,25 +1826,13 @@ export default function App() {
     setConnected(true);
     setTab("dashboard");
     try { localStorage.setItem(SESSION_KEY, JSON.stringify(next)); } catch {}
-    refreshUsage(res.session_token);
     return true;
   };
-
-  const refreshUsage = (key = token) => {
-    if (!key) return;
-    getUsage(key).then(setUsage).catch(() => {});
-  };
-
-  // Refresh the credit meter whenever we come back from a review/upload.
-  useEffect(() => {
-    if (connected && !docId) refreshUsage();
-  }, [connected, docId, token]);
 
   const disconnect = () => {
     setConnected(false);
     setDocId(null);
     setSession({ token: "", user: null, partnerName: "" });
-    setUsage(null);
     try { localStorage.removeItem(SESSION_KEY); } catch {}
   };
 
@@ -2136,10 +1876,6 @@ export default function App() {
     <DocumentsList key={docsClient || "all"} apiKey={token} role={user?.role || "owner"} initialClient={docsClient} onOpen={(id) => setDocId(id)} onGotoUpload={() => setTab("upload")} />
   ) : tab === "search" ? (
     <SearchPanel apiKey={token} onOpen={(id) => setDocId(id)} />
-  ) : tab === "usage" ? (
-    <UsagePanel apiKey={token} />
-  ) : tab === "billing" && user?.role !== "analyst" ? (
-    <BillingPanel apiKey={token} />
   ) : tab === "audit" ? (
     <AuditPanel apiKey={token} />
   ) : tab === "members" && user?.role !== "analyst" ? (
@@ -2203,7 +1939,6 @@ export default function App() {
             onPickClient={(c) => { setDocsClient(c); setTab("docs"); setDocId(null); }}
           />
           <div className="topbar-right">
-            <CreditMeter usage={usage} compact />
             <button className="profile-btn" onClick={() => { setTab("settings"); setDocId(null); }} title="Profile & settings">
               <span className="avatar">{(["", user?.name].includes(user?.name) ? "?" : user.name.split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || "").join("")) || "U"}</span>
               <span className="profile-info">

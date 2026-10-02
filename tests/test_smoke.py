@@ -225,12 +225,6 @@ class TestReviewFlow:
 
 
 class TestUsageAndQuota:
-    def test_usage_endpoint(self, client, test_key, seed_partner):
-        r = client.get("/usage", headers=_headers(test_key))
-        assert r.status_code == 200
-        assert r.json()["monthly_quota"] == 1000
-        assert r.json()["can_extract"] is True
-
     def test_ai_usage_meter(self, client, test_key, seed_partner):
         r = client.get("/usage/ai", headers=_headers(test_key))
         assert r.status_code == 200
